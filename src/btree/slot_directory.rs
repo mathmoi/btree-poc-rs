@@ -22,18 +22,15 @@ pub enum SlotDirectoryError {
 /// While this could be a simple tuple, a struct is used to allow control over the memory layout when cells are
 /// eventually stored in buffer pages on disk.
 #[derive(Clone)]
-pub struct Cell<K: Clone, V: Clone> {
-    /// Represents a key-value pair stored in the slot directory.
-    ///
-    /// While this could be a simple tuple, a struct is used to allow control over the memory layout when cells are
-    /// eventually stored in buffer pages on disk.
+pub struct Cell<K, V> {
+    /// The key component of this key-value pair.
     pub key: K,
 
     /// The value associated with the key.
     pub value: V,
 }
 
-impl<K: Clone, V: Clone> Cell<K, V> {
+impl<K, V> Cell<K, V> {
     /// Creates a new `Cell` containing the specified key-value pair.
     ///
     /// # Arguments
@@ -61,7 +58,7 @@ impl<K: Clone, V: Clone> Cell<K, V> {
 /// # Invariants
 /// * Keys are always maintained in sorted ascending order
 /// * No duplicate keys are allowed
-pub struct SlotDirectory<K: Ord + Clone, V: Clone> {
+pub struct SlotDirectory<K, V> {
     cells: Vec<Cell<K, V>>,
 }
 
@@ -74,15 +71,15 @@ pub struct SlotDirectory<K: Ord + Clone, V: Clone> {
 /// * `'a` - The lifetime of the borrow from the [`SlotDirectory`]
 /// * `K` - The key type, which must implement `Ord` and `Clone`
 /// * `V` - The value type, which must implement `Clone`
-pub struct SlotDirectoryIterator<'a, K: Ord + Clone, V: Clone> {
+pub struct SlotDirectoryIterator<'a, K, V> {
     slot_directory: &'a SlotDirectory<K, V>,
     current_index: usize,
 }
 
 impl<K, V> PartialEq for Cell<K, V>
 where
-    K: Clone + PartialEq,
-    V: Clone + PartialEq,
+    K: PartialEq,
+    V: PartialEq,
 {
     fn eq(&self, other: &Self) -> bool {
         self.key == other.key && self.value == other.value
@@ -152,7 +149,7 @@ impl<K: Ord + Clone, V: Clone> SlotDirectory<K, V> {
     }
 }
 
-impl<K: Ord + Clone, V: Clone> Default for SlotDirectory<K, V> {
+impl<K, V> Default for SlotDirectory<K, V> {
     fn default() -> Self {
         SlotDirectory { cells: Vec::new() }
     }
@@ -183,7 +180,7 @@ impl<'a, K: Ord + Clone, V: Clone> ExactSizeIterator for SlotDirectoryIterator<'
     }
 }
 
-impl<K: Ord + Clone + Debug, V: Clone> Debug for SlotDirectory<K, V> {
+impl<K: Debug, V> Debug for SlotDirectory<K, V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Keys: [")?;
         for (i, cell) in self.cells.iter().enumerate() {

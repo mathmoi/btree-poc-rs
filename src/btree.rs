@@ -85,23 +85,17 @@ pub enum BTreeBuilderError {
 /// will be stored in pages on disk and a pager will manage reading and writing pages to and from disk.
 ///
 /// # Type Parameters
-/// * `K` - The key type, which must be orderable, debuggable, and cloneable
-/// * `V` - The value type, which must be debuggable and cloneable
-pub struct BTree<K, V>
-where
-    K: Ord + Clone,
-    V: Clone,
-{
+/// * `K` - The key type
+/// * `V` - The value type
+pub struct BTree<K, V> {
     nodes: HashMap<NodeId, Node<K, V>>,
     order: usize,
     root_node_id: NodeId,
 }
 
-impl<K, V> BTree<K, V>
-where
-    K: Ord + Debug + Clone,
-    V: Debug + Clone,
-{
+// TODO : Implémenter et utiliser des méthodes helper pour les noeuds (get_node, get_node_mut, allocate_node, remove_node, etc.)
+
+impl<K: Debug + Clone + Ord, V: Clone> BTree<K, V> {
     /// Creates a new, empty `BTree` with the specified order.
     ///
     /// The order determines the branching factor of the tree, which affects performance characteristics. Higher orders
@@ -201,7 +195,7 @@ where
         f: &mut std::fmt::Formatter<'_>,
     ) -> std::fmt::Result {
         let connector = if is_last { "└── " } else { "├── " };
-        let node = self.nodes.get(&node_id).unwrap();
+        let node = self.nodes.get(&node_id).expect("Node ID should exist in the tree");
 
         writeln!(f, "{}{}{:?}", prefix, connector, node)?;
 
@@ -219,11 +213,7 @@ where
     // TODO : Implement deletion
 }
 
-impl<K, V> BTree<K, V>
-where
-    K: Ord + PartialEq + Clone,
-    V: PartialEq + Clone,
-{
+impl<K: Clone + Ord + PartialEq, V: Clone + PartialEq> BTree<K, V> {
     /// Recursively checks if two nodes and their subtrees are equal.
     ///
     /// This helper method performs a deep comparison of node structures, comparing not only the keys but also
@@ -264,24 +254,32 @@ where
     }
 }
 
-impl<K, V> PartialEq for BTree<K, V>
-where
-    K: Ord + PartialEq + Clone,
-    V: PartialEq + Clone,
-{
+impl<K: Clone + Ord + PartialEq, V: Clone + PartialEq> PartialEq for BTree<K, V> {
     fn eq(&self, other: &Self) -> bool {
         self.order == other.order && self.check_node_eq_recursive(self.root_node_id, other, other.root_node_id)
     }
 }
 
-impl<K, V> Debug for BTree<K, V>
-where
-    K: Ord + Debug + Clone,
-    V: Debug + Clone,
-{
+impl<K: Clone + Ord + PartialEq + Debug, V: Clone> Debug for BTree<K, V> {
+    /// Implements the `Debug` trait for `BTree` to provide a custom, tree-like visualization of the structure.
+    ///
+    /// This implementation uses the `fmt_node` helper function to recursively format the tree's nodes and their
+    /// descendants. The root node is printed first, followed by its children, with proper indentation and tree
+    /// connectors to visually represent the hierarchy.
+    ///
+    /// # Arguments
+    /// * `f` - The formatter to write the debug output to
+    ///
+    /// # Returns
+    /// * `Ok(())` - If formatting was successful
+    /// * `Err` - If a formatting error occurred
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Write the header line with the tree's order
         writeln!(f, "B+Tree (order={}):", self.order)?;
+
+        // Use the helper function to recursively format the tree starting from the root node
         self.fmt_node(self.root_node_id, "", true, f)?;
+
         Ok(())
     }
 }
@@ -297,17 +295,13 @@ where
 /// node creation.
 ///
 /// # Type Parameters
-/// * `K` - The key type, which must be orderable and cloneable
-/// * `V` - The value type, which must be cloneable
+/// * `K` - The key type
+/// * `V` - The value type
 ///
 /// # Note
 /// This type is only available in test builds.
 #[cfg(test)]
-struct BTreeBuilder<K, V>
-where
-    K: Ord + Clone,
-    V: Clone,
-{
+struct BTreeBuilder<K, V> {
     order: usize,
     nodes: HashMap<NodeId, Node<K, V>>,
     next_node_id: NodeId,
@@ -322,11 +316,7 @@ where
 /// - Node ID counter starting at 0
 /// - Empty node stack
 #[cfg(test)]
-impl<K, V> Default for BTreeBuilder<K, V>
-where
-    K: Ord + Clone,
-    V: Clone,
-{
+impl<K, V> Default for BTreeBuilder<K, V> {
     /// Creates a new `BTreeBuilder` with default configurations.
     fn default() -> Self {
         BTreeBuilder::<K, V> { order: 3, nodes: HashMap::new(), next_node_id: 0, node_id_stack: Vec::new() }
@@ -334,11 +324,7 @@ where
 }
 
 #[cfg(test)]
-impl<K, V> BTreeBuilder<K, V>
-where
-    K: Ord + Clone,
-    V: Clone,
-{
+impl<K: Clone + Ord, V: Clone> BTreeBuilder<K, V> {
     /// Sets the order of the B+Tree to be built.
     ///
     /// # Arguments

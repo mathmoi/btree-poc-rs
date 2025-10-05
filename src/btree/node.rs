@@ -55,9 +55,9 @@ impl From<SlotDirectoryError> for NodeError {
 /// efficient range queries and sequential scans.
 ///
 /// # Type Parameters
-/// * `K` - The key type, which must be orderable and cloneable
-/// * `V` - The value type, which must be cloneable
-pub struct LeafNode<K: Ord + Clone, V: Clone> {
+/// * `K` - The key type
+/// * `V` - The value type
+pub struct LeafNode<K, V> {
     slot_directory: SlotDirectory<K, V>,
     next_leaf: Option<u32>,
 }
@@ -82,13 +82,13 @@ impl<K: Ord + Clone, V: Clone> LeafNode<K, V> {
 }
 
 /// Creates a new, empty `LeafNode` with no next leaf pointer.
-impl<K: Ord + Clone, V: Clone> Default for LeafNode<K, V> {
+impl<K, V> Default for LeafNode<K, V> {
     fn default() -> Self {
         LeafNode { slot_directory: SlotDirectory::default(), next_leaf: None }
     }
 }
 
-impl<K: Ord + Clone + Debug, V: Clone> Debug for LeafNode<K, V> {
+impl<K: Debug, V> Debug for LeafNode<K, V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "[LEAF] {:?}", self.slot_directory)?;
         Ok(())
@@ -113,19 +113,13 @@ impl<K: Ord + PartialEq + Clone, V: PartialEq + Clone> PartialEq for LeafNode<K,
 /// the node.
 ///
 /// # Type Parameters
-/// * `K` - The key type, which must be orderable and cloneable
-pub struct InternalNode<K>
-where
-    K: Ord + Clone,
-{
+/// * `K` - The key type
+pub struct InternalNode<K> {
     slot_directory: SlotDirectory<K, NodeId>,
     right_most_child: Option<NodeId>,
 }
 
-impl<K> InternalNode<K>
-where
-    K: Ord + Clone,
-{
+impl<K: Clone + Ord> InternalNode<K> {
     /// Returns an iterator over all keys in this internal node.
     ///
     /// # Returns
@@ -193,20 +187,14 @@ where
     }
 }
 
-impl<K> Default for InternalNode<K>
-where
-    K: Ord + Clone,
-{
+impl<K> Default for InternalNode<K> {
     /// Creates a new, empty `InternalNode` with no children.
     fn default() -> Self {
         InternalNode { slot_directory: SlotDirectory::default(), right_most_child: None }
     }
 }
 
-impl<K> Debug for InternalNode<K>
-where
-    K: Ord + Debug + Clone,
-{
+impl<K: Debug> Debug for InternalNode<K> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "[INTERNAL] {:?}", self.slot_directory)?;
         Ok(())
@@ -227,22 +215,16 @@ where
 /// * `Internal` - An internal node containing keys and child node references
 ///
 /// # Type Parameters
-/// * `K` - The key type, which must be orderable and cloneable
-/// * `V` - The value type for leaf nodes, which must be cloneable
-pub enum Node<K, V>
-where
-    K: Ord + Clone,
-    V: Clone,
-{
+/// * `K` - The key type
+/// * `V` - The value type for leaf nodes
+pub enum Node<K, V> {
     Leaf(LeafNode<K, V>),
     Internal(InternalNode<K>),
 }
 
-impl<K, V> Debug for Node<K, V>
-where
-    K: Ord + Debug + Clone,
-    V: Debug + Clone,
-{
+// TODO : Ajouter et utiliser des méthodes as_internal(), as_leaf() et leurs variantes mutables
+
+impl<K: Debug, V> Debug for Node<K, V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Node::Leaf(leaf) => write!(f, "{:?}", leaf),
