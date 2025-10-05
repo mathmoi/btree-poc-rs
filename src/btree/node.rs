@@ -4,24 +4,36 @@ use thiserror::Error;
 
 pub use super::slot_directory::Cell;
 
+/// Unique identifier for nodes in the B+Tree.
+///
+/// Node IDs are used to reference nodes stored in the tree's internal storage, allowing for efficient lookup and
+/// traversal operations.
 pub type NodeId = u32;
 
 // =====================================================================================================================
 // CellError
 // =====================================================================================================================
 
+/// Errors that can occur during node operations.
 #[derive(Error, Debug)]
 pub enum NodeError {
+    /// Attempted to insert a key that already exists in the node.
     #[error("Key already exists")]
     KeyAlreadyExists,
 
+    /// Attempted an operation that requires an internal node on a non-internal node.
     #[error("The node is not an internal node")]
     NotInternalNode,
 
+    /// An unexpected error occurred during a node operation.
     #[error("Unexpected error: {0}")]
     Unexpected(#[from] Box<dyn std::error::Error + Send + Sync>),
 }
 
+/// Converts a `SlotDirectoryError` into a `NodeError`.
+///
+/// This conversion maps slot directory errors to their corresponding node errors, wrapping unexpected errors in the
+/// `Unexpected` variant.
 impl From<SlotDirectoryError> for NodeError {
     /// Converts a `SlotDirectoryError` into a `NodeError`.
     fn from(err: SlotDirectoryError) -> Self {
@@ -36,8 +48,15 @@ impl From<SlotDirectoryError> for NodeError {
 // LeafNode
 // =====================================================================================================================
 
-/// Represents a leaf node in a B+Tree. Leaf nodes contains key-value pairs where the value is the data being stored in
-/// the B+Tree. Leaf nodes are linked together to allow for efficient range queries.
+/// Represents a leaf node in a B+Tree.
+///
+/// Leaf nodes contain key-value pairs where the value is the actual data being stored in the B+Tree. Unlike internal
+/// nodes, leaf nodes do not have child nodes. Leaf nodes are linked together via the `next_leaf` pointer to allow for
+/// efficient range queries and sequential scans.
+///
+/// # Type Parameters
+/// * `K` - The key type, which must be orderable and cloneable
+/// * `V` - The value type, which must be cloneable
 pub struct LeafNode<K: Ord + Clone, V: Clone> {
     slot_directory: SlotDirectory<K, V>,
     next_leaf: Option<u32>,
@@ -45,14 +64,25 @@ pub struct LeafNode<K: Ord + Clone, V: Clone> {
 
 impl<K: Ord + Clone, V: Clone> LeafNode<K, V> {
     /// Inserts a cell into the leaf node.
+    ///
+    /// The cell is inserted in sorted order by key. If the key already exists, the insertion fails.
+    ///
+    /// # Arguments
+    /// * `cell` - The key-value pair to insert
+    ///
+    /// # Returns
+    /// * `Ok(())` - If the insertion was successful
+    ///
+    /// # Errors
+    /// * `NodeError::KeyAlreadyExists` - If the key is already present in the node
     pub fn insert(&mut self, cell: Cell<K, V>) -> Result<(), NodeError> {
         self.slot_directory.insert(cell)?;
         Ok(())
     }
 }
 
+/// Creates a new, empty `LeafNode` with no next leaf pointer.
 impl<K: Ord + Clone, V: Clone> Default for LeafNode<K, V> {
-    /// Creates a new, empty `LeafNode`.
     fn default() -> Self {
         LeafNode { slot_directory: SlotDirectory::default(), next_leaf: None }
     }
@@ -75,7 +105,15 @@ impl<K: Ord + PartialEq + Clone, V: PartialEq + Clone> PartialEq for LeafNode<K,
 // InternalNode
 // =====================================================================================================================
 
-/// Represents an internal node in a B+Tree. Internals nodes contains keys and refernces to child nodes.
+/// Represents an internal node in a B+Tree.
+///
+/// Internal nodes contain keys and references to child nodes. Each key in an internal node acts as a separator, with
+/// the child to the left containing keys less than the separator and the child to the right containing keys greater
+/// than or equal to it. Internal nodes also maintain a rightmost child pointer for keys greater than all separators in
+/// the node.
+///
+/// # Type Parameters
+/// * `K` - The key type, which must be orderable and cloneable
 pub struct InternalNode<K>
 where
     K: Ord + Clone,
@@ -109,21 +147,46 @@ where
     }
 
     /// Returns the number of children this internal node has.
+    ///
+    /// This count includes all children in the slot directory plus the rightmost child if it exists.
+    ///
+    /// # Returns
+    /// The total number of child nodes
     pub fn len(&self) -> usize {
         self.slot_directory.len() + if self.right_most_child.is_some() { 1 } else { 0 }
     }
 
-    /// Returns the right most child of this internal node, if it exists.
+    /// Returns the rightmost child of this internal node, if it exists.
+    ///
+    /// The rightmost child contains all keys greater than every separator key in the node.
+    ///
+    /// # Returns
+    /// * `Some(NodeId)` - The ID of the rightmost child node
+    /// * `None` - If no rightmost child has been set
     pub fn right_most_child(&self) -> Option<NodeId> {
         self.right_most_child
     }
 
-    /// Sets the right most child of this internal node.
+    /// Sets the rightmost child of this internal node.
+    ///
+    /// # Arguments
+    /// * `child` - The node ID to set as the rightmost child
     pub fn set_right_most_child(&mut self, child: NodeId) {
         self.right_most_child = Some(child);
     }
 
     /// Inserts a cell into the internal node.
+    ///
+    /// The cell contains a separator key and a reference to a child node. The cell is inserted in sorted order by key.
+    ///
+    /// # Arguments
+    /// * `cell` - The key and child node ID pair to insert
+    ///
+    /// # Returns
+    /// * `Ok(())` - If the insertion was successful
+    ///
+    /// # Errors
+    /// * `NodeError::KeyAlreadyExists` - If the key is already present in the node
     pub fn insert(&mut self, cell: Cell<K, NodeId>) -> Result<(), NodeError> {
         self.slot_directory.insert(cell)?;
         Ok(())
@@ -134,7 +197,7 @@ impl<K> Default for InternalNode<K>
 where
     K: Ord + Clone,
 {
-    /// Creates a new, empty `InternalNode`.
+    /// Creates a new, empty `InternalNode` with no children.
     fn default() -> Self {
         InternalNode { slot_directory: SlotDirectory::default(), right_most_child: None }
     }
@@ -154,7 +217,18 @@ where
 // Node
 // =====================================================================================================================
 
-/// Enum that can store either a leaf node or an internal node.
+/// Enum representing either a leaf node or an internal node in a B+Tree.
+///
+/// This enum provides a unified interface for working with different node types, allowing operations to be performed
+/// without knowing the specific node type in advance.
+///
+/// # Variants
+/// * `Leaf` - A leaf node containing key-value pairs with actual data
+/// * `Internal` - An internal node containing keys and child node references
+///
+/// # Type Parameters
+/// * `K` - The key type, which must be orderable and cloneable
+/// * `V` - The value type for leaf nodes, which must be cloneable
 pub enum Node<K, V>
 where
     K: Ord + Clone,

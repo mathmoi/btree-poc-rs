@@ -9,20 +9,25 @@ use thiserror::Error;
 // Errors
 // =====================================================================================================================
 
+/// Errors that can occur during B+Tree operations.
 #[derive(Error, Debug)]
 pub enum BTreeError {
-    #[error("Key already exists")]
+    /// Attempted to insert a key that already exists in the tree.
+    #[error("Attempted to insert a key that already exists in the tree")]
     KeyAlreadyExists,
 
-    #[error("The minum order for a B-Tree is 3")]
+    /// The specified order is below the minimum required for a valid B+Tree.
+    ///
+    /// B+Trees require a minimum order of 3 to maintain their structural properties.
+    #[error("The minimum order for a B-Tree is 3")]
     MinimumOrderNotMet,
 
+    /// An unexpected error occurred during a B+Tree operation.
     #[error("Unexpected error: {0}")]
     Unexpected(#[from] Box<dyn std::error::Error + Send + Sync>),
 }
 
 impl From<NodeError> for BTreeError {
-    /// Converts a `NodeError` into a `BTreeError`.
     fn from(err: NodeError) -> Self {
         match err {
             NodeError::KeyAlreadyExists => BTreeError::KeyAlreadyExists,
@@ -32,27 +37,38 @@ impl From<NodeError> for BTreeError {
     }
 }
 
+/// Errors that can occur during B+Tree construction using the builder pattern.
+///
+/// This error type is only available in test builds and is used by `BTreeBuilder`
+/// to provide detailed error information during tree construction for testing purposes.
 #[cfg(test)]
 #[derive(Error, Debug)]
 pub enum BTreeBuilderError {
-    #[error("The right most child of the internal node already exists")]
+    /// Attempted to set a rightmost child when one already exists.
+    #[error("Attempted to set a rightmost child when one already exists")]
     MostRightChildAlreadyExists,
 
+    /// Attempted to add a child to a node that is not an internal node.
     #[error("The parent node is not an internal node")]
     ParentNodeIsNotInternalNode,
 
+    /// Called `end_node()` without a corresponding node to complete.
     #[error("No node to end")]
     NoNodeToEnd,
 
+    /// Attempted an operation that requires a current node when none exists.
     #[error("No current node to build upon")]
     NoCurrentNode,
 
+    /// Attempted to add a key-value pair to a node that is not a leaf node.
     #[error("The current node is not a leaf node")]
     CurrentNodeIsNotLeaf,
 
+    /// A node operation failed during tree construction.
     #[error(transparent)]
     NodeError(#[from] NodeError),
 
+    /// An unexpected error occurred during tree construction.
     #[error("Unexpected error: {0}")]
     Unexpected(#[from] Box<dyn std::error::Error + Send + Sync>),
 }
@@ -63,10 +79,14 @@ pub enum BTreeBuilderError {
 
 /// Represents a B+Tree data structure.
 ///
-/// The structure stores nodes in a hashmap where the key is a unique node identifier and the value is the node itself.
-/// It does not makes a lot of sense to have a BTree that stores it's nodes in a haBox<dyn Error>shmap in memory, but this is just a
-/// proof of concept before implementing a B+Tree that stores it's nodes in a file. In the final product, nodes will be
-/// stored in pages on disk and pager will manage reading and writing pages to and from disk.
+/// This implementation stores nodes in a hashmap where the key is a unique node identifier and the value is the node
+/// itself. While storing nodes in memory via a hashmap is not typical for production B+Trees, this design serves as a
+/// proof of concept before implementing a B+Tree that stores nodes in disk pages. In the final implementation, nodes
+/// will be stored in pages on disk and a pager will manage reading and writing pages to and from disk.
+///
+/// # Type Parameters
+/// * `K` - The key type, which must be orderable, debuggable, and cloneable
+/// * `V` - The value type, which must be debuggable and cloneable
 pub struct BTree<K, V>
 where
     K: Ord + Clone,
@@ -85,14 +105,18 @@ where
     /// Creates a new, empty `BTree` with the specified order.
     ///
     /// The order determines the branching factor of the tree, which affects performance characteristics. Higher orders
-    /// result in wider, shallower trees with better cache locality but potentially more wasted space.
+    /// result in wider, shallower trees with better cache locality but potentially more wasted space. The order
+    /// represents the maximum number of children an internal node can have.
     ///
     /// # Arguments
-    /// * `order` - The maximum number of children each internal node can have. Must be at least 2 for a valid B-tree
+    /// * `order` - The maximum number of children each internal node can have. Must be at least 3 for a valid B+Tree
     ///   structure.
     ///
     /// # Returns
-    /// A new empty `BTree` ready for insertions and operations.
+    /// * `Ok(BTree)` - A new empty B+Tree ready for insertions
+    ///
+    /// # Errors
+    /// * `BTreeError::MinimumOrderNotMet` - If the order is less than 3
     pub fn new(order: usize) -> Result<Self, BTreeError> {
         if order < 3 {
             return Err(BTreeError::MinimumOrderNotMet);
@@ -106,14 +130,43 @@ where
 
     // TODO : Implement search
 
-    /// Inserts a key-value pair into the BTree. If the key already exists, an error is returned.
+    /// Inserts a key-value pair into the B+Tree.
+    ///
+    /// The insertion maintains the B+Tree properties by recursively traversing to the appropriate leaf node and
+    /// inserting the cell. If the key already exists anywhere in the tree, the insertion fails.
+    ///
+    /// # Arguments
+    /// * `cell` - The key-value pair to insert
+    ///
+    /// # Returns
+    /// * `Ok(())` - If the insertion was successful
+    ///
+    /// # Errors
+    /// * `BTreeError::KeyAlreadyExists` - If the key is already present in the tree
     pub fn insert(&mut self, cell: Cell<K, V>) -> Result<(), BTreeError> {
         self.insert_recursive(self.root_node_id, cell)
     }
 
+    /// Recursively inserts a cell into the tree starting from the specified node.
+    ///
+    /// This is an internal helper method that performs the actual recursive insertion logic. Currently only supports
+    /// insertion into leaf nodes.
+    ///
+    /// # Arguments
+    /// * `node_id` - The ID of the node to start insertion from
+    /// * `cell` - The key-value pair to insert
+    ///
+    /// # Returns
+    /// * `Ok(())` - If the insertion was successful
+    ///
+    /// # Errors
+    /// * `BTreeError::KeyAlreadyExists` - If the key is already present in the node
+    ///
+    /// # Panics
+    /// Panics if the specified node ID does not exist in the tree's node storage.
     fn insert_recursive(&mut self, node_id: NodeId, cell: Cell<K, V>) -> Result<(), BTreeError> {
         let Some(node) = self.nodes.get_mut(&node_id) else {
-            panic!("Node id {} not found", node_id);
+            panic!("Node id {} not found", node_id); // TODO : Is there a better alternative to panicking here?
         };
 
         match node {
@@ -127,6 +180,20 @@ where
         }
     }
 
+    /// Formats a node and its descendants in a tree-like structure.
+    ///
+    /// This is an internal helper method used by the `Debug` implementation to recursively format the tree structure
+    /// with proper indentation and tree connectors.
+    ///
+    /// # Arguments
+    /// * `node_id` - The ID of the node to format
+    /// * `prefix` - The string prefix for indentation (accumulated through recursion)
+    /// * `is_last` - Whether this node is the last child of its parent
+    /// * `f` - The formatter to write to
+    ///
+    /// # Returns
+    /// * `Ok(())` - If formatting was successful
+    /// * `Err` - If a formatting error occurred
     fn fmt_node(
         &self,
         node_id: NodeId,
@@ -153,23 +220,23 @@ where
     // TODO : Implement deletion
 }
 
-impl<K, V> Debug for BTree<K, V>
-where
-    K: Ord + Debug + Clone,
-    V: Debug + Clone,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "B+Tree (order={}):", self.order)?;
-        self.fmt_node(self.root_node_id, "", true, f)?;
-        Ok(())
-    }
-}
-
 impl<K, V> BTree<K, V>
 where
     K: Ord + PartialEq + Clone,
     V: PartialEq + Clone,
 {
+    /// Recursively checks if two nodes and their subtrees are equal.
+    ///
+    /// This helper method performs a deep comparison of node structures, comparing not only the keys but also
+    /// recursively comparing all child nodes in the subtrees.
+    ///
+    /// # Arguments
+    /// * `node_id` - The ID of the node in this tree to compare
+    /// * `other` - The other B+Tree to compare against
+    /// * `other_node_id` - The ID of the node in the other tree to compare with
+    ///
+    /// # Returns
+    /// `true` if the nodes and their entire subtrees are equal, `false` otherwise
     fn check_node_eq_recursive(&self, node_id: NodeId, other: &BTree<K, V>, other_node_id: NodeId) -> bool {
         let self_node = self.nodes.get(&node_id);
         let other_node = other.nodes.get(&other_node_id);
@@ -208,11 +275,34 @@ where
     }
 }
 
+impl<K, V> Debug for BTree<K, V>
+where
+    K: Ord + Debug + Clone,
+    V: Debug + Clone,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "B+Tree (order={}):", self.order)?;
+        self.fmt_node(self.root_node_id, "", true, f)?;
+        Ok(())
+    }
+}
+
 // =====================================================================================================================
 // BTreeBuilder (for tests)
 // =====================================================================================================================
 
-/// Builder for creating BTree instances with custom configurations for testing purposes.
+/// Builder for creating B+Tree instances with custom configurations for testing purposes.
+///
+/// This builder provides a fluent interface for constructing B+Trees with specific structures, allowing tests to create
+/// complex tree configurations easily. The builder maintains a stack of nodes being constructed, enabling hierarchical
+/// node creation.
+///
+/// # Type Parameters
+/// * `K` - The key type, which must be orderable and cloneable
+/// * `V` - The value type, which must be cloneable
+///
+/// # Note
+/// This type is only available in test builds.
 #[cfg(test)]
 struct BTreeBuilder<K, V>
 where
@@ -225,6 +315,13 @@ where
     node_id_stack: Vec<NodeId>,
 }
 
+/// Creates a new `BTreeBuilder` with default configurations.
+///
+/// The default builder starts with:
+/// - Order of 3 (minimum valid B+Tree order)
+/// - Empty node collection
+/// - Node ID counter starting at 0
+/// - Empty node stack
 #[cfg(test)]
 impl<K, V> Default for BTreeBuilder<K, V>
 where
@@ -243,23 +340,66 @@ where
     K: Ord + Clone,
     V: Clone,
 {
-    /// Sets the order of the BTree to be built.
+    /// Sets the order of the B+Tree to be built.
+    ///
+    /// # Arguments
+    /// * `order` - The maximum number of children each internal node can have
+    ///
+    /// # Returns
+    /// The builder instance for method chaining
     fn with_order(mut self, order: usize) -> Self {
         self.order = order;
         self
     }
 
-    /// Builds and returns a new BTree instance with the specified configurations.
+    /// Builds and returns a new B+Tree instance with the configured nodes and order.
+    ///
+    /// This consumes the builder and produces the final B+Tree. The root node is assumed to be the node with ID 0.
+    ///
+    /// # Returns
+    /// A fully constructed `BTree` instance
     fn build(self) -> BTree<K, V> {
         BTree { nodes: self.nodes, order: self.order, root_node_id: 0 }
     }
 
-    /// Adds a new leaf node to the BTree being built.
+    /// Adds a new leaf node to the B+Tree being built.
+    ///
+    /// If a key is provided and there is a parent node on the stack, the new leaf is attached to the parent as a child
+    /// with the given key as the separator. If no key is provided, the leaf is set as the parent's rightmost child.
+    ///
+    /// # Arguments
+    /// * `key_opt` - Optional key to use as separator in the parent node. If `None` and a parent exists, this node
+    ///   becomes the rightmost child.
+    ///
+    /// # Returns
+    /// * `Ok(Self)` - The builder instance for method chaining
+    ///
+    /// # Errors
+    /// * `BTreeBuilderError::ParentNodeIsNotInternalNode` - If the parent is not an internal node
+    /// * `BTreeBuilderError::MostRightChildAlreadyExists` - If trying to set a rightmost child when one already exists
+    /// * `BTreeBuilderError::NodeError` - If inserting the key-child pair into the parent fails
     fn add_leaf_node(mut self, key_opt: Option<K>) -> Result<Self, BTreeBuilderError> {
         self.add_node(key_opt, Node::Leaf(LeafNode::default()))?;
         Ok(self)
     }
 
+    /// Adds a new internal node to the B+Tree being built.
+    ///
+    /// If a key is provided and there is a parent node on the stack, the new internal node is attached to the parent as
+    /// a child with the given key as the separator. If no key is provided, the internal node is set as the parent's
+    /// rightmost child.
+    ///
+    /// # Arguments
+    /// * `key_opt` - Optional key to use as separator in the parent node. If `None` and a parent exists, this node
+    ///   becomes the rightmost child.
+    ///
+    /// # Returns
+    /// * `Ok(Self)` - The builder instance for method chaining
+    ///
+    /// # Errors
+    /// * `BTreeBuilderError::ParentNodeIsNotInternalNode` - If the parent is not an internal node
+    /// * `BTreeBuilderError::MostRightChildAlreadyExists` - If trying to set a rightmost child when one already exists
+    /// * `BTreeBuilderError::NodeError` - If inserting the key-child pair into the parent fails
     fn add_internal_node(mut self, key_opt: Option<K>) -> Result<Self, BTreeBuilderError> {
         use crate::btree::node::InternalNode;
 
@@ -267,6 +407,23 @@ where
         Ok(self)
     }
 
+    /// Internal helper method that adds a node to the tree being built.
+    ///
+    /// This method handles the common logic for adding both leaf and internal nodes, including assigning node IDs,
+    /// attaching to parent nodes, and managing the node stack.
+    ///
+    /// # Arguments
+    /// * `key_opt` - Optional key for attaching to the parent. If `None` and a parent exists, this node becomes the
+    ///   rightmost child.
+    /// * `new_node` - The node to add to the tree
+    ///
+    /// # Returns
+    /// * `Ok(())` - If the node was successfully added
+    ///
+    /// # Errors
+    /// * `BTreeBuilderError::ParentNodeIsNotInternalNode` - If the parent is not an internal node
+    /// * `BTreeBuilderError::MostRightChildAlreadyExists` - If trying to set a rightmost child when one already exists
+    /// * `BTreeBuilderError::NodeError` - If inserting the key-child pair into the parent fails
     fn add_node(&mut self, key_opt: Option<K>, new_node: Node<K, V>) -> Result<(), BTreeBuilderError> {
         let new_node_id = self.next_node_id;
         self.next_node_id += 1;
@@ -296,7 +453,22 @@ where
         Ok(())
     }
 
-    /// Adds key-value pair to the current leaf node.
+    /// Adds a key-value pair to the current leaf node.
+    ///
+    /// The current node is the most recently added node that has not been closed with `end_node()`. This method can
+    /// only be called when the current node is a leaf node.
+    ///
+    /// # Arguments
+    /// * `key` - The key of the pair to insert
+    /// * `value` - The value of the pair to insert
+    ///
+    /// # Returns
+    /// * `Ok(Self)` - The builder instance for method chaining
+    ///
+    /// # Errors
+    /// * `BTreeBuilderError::NoCurrentNode` - If there is no current node on the stack
+    /// * `BTreeBuilderError::CurrentNodeIsNotLeaf` - If the current node is not a leaf node
+    /// * `BTreeBuilderError::NodeError` - If the key already exists in the leaf node
     fn add_key_value_pair(mut self, key: K, value: V) -> Result<Self, BTreeBuilderError> {
         let node_id = self.node_id_stack.last().ok_or(BTreeBuilderError::NoCurrentNode)?;
         let leaf_node = match self.nodes.get_mut(node_id) {
@@ -310,17 +482,15 @@ where
 
     /// Completes the current node and returns to the parent node context in the builder chain.
     ///
-    /// This method is used to signal that you've finished adding children or key-value pairs to the current node and
-    /// want to return to working with its parent node (or exit the current node's scope if it's the root). It pops the
-    /// current node from the internal node stack, allowing subsequent builder operations to apply to the parent level.
+    /// This method signals that you have finished adding children or key-value pairs to the current node and want to
+    /// return to working with its parent node (or exit the current node's scope if it is the root). It pops the current
+    /// node from the internal node stack, allowing subsequent builder operations to apply to the parent level.
     ///
     /// # Returns
-    /// * `Ok(Self)` - Returns the builder for method chaining if a node was successfully popped
-    /// * `Err(BTreeError::NoNodeToEnd)` - Returns an error if the node stack is empty
+    /// * `Ok(Self)` - The builder instance for method chaining
     ///
     /// # Errors
-    /// Returns `BTreeError::NoNodeToEnd` when called without a corresponding node to complete, typically when
-    /// `end_node()` is called more times than nodes were added.
+    /// * `BTreeBuilderError::NoNodeToEnd` - If the node stack is empty (no node to complete)
     fn end_node(mut self) -> Result<Self, BTreeBuilderError> {
         self.node_id_stack.pop().ok_or(BTreeBuilderError::NoNodeToEnd)?;
         Ok(self)

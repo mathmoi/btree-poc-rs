@@ -2,38 +2,78 @@ use std::fmt::Debug;
 
 use thiserror::Error;
 
+/// Errors that can occur during `SlotDirectory` operations.
 #[derive(Error, Debug)]
 pub enum SlotDirectoryError {
-    #[error("Key already exists")]
+    /// The key being inserted already exists in the slot directory.
+    #[error("The key being inserted already exists in the slot directory")]
     KeyAlreadyExists,
 
+    /// The requested index is outside the valid range of the slot directory.
+    ///
+    /// This error is returned when attempting to access a cell at an index that is greater than or equal to the number
+    /// of cells in the directory.
     #[error("Index {index} out of bounds, SlotDirectory has {size} cells")]
     IndexOutOfBounds { index: usize, size: usize },
 }
 
-/// Represents a key-value pair stored in the slot directory. This could be a simele tuple, but since we will eventually
-/// needs an object to control the memory layout of the cell in a buffer page we use a struct here.
+/// Represents a key-value pair stored in the slot directory.
+///
+/// While this could be a simple tuple, a struct is used to allow control over the memory layout when cells are
+/// eventually stored in buffer pages on disk.
 #[derive(Clone)]
 pub struct Cell<K: Clone, V: Clone> {
-    // TODO : In the final implementation K and V should not need to be Clone
+    /// Represents a key-value pair stored in the slot directory.
+    ///
+    /// While this could be a simple tuple, a struct is used to allow control over the memory layout when cells are
+    /// eventually stored in buffer pages on disk.
     pub key: K,
+
+    /// The value associated with the key.
     pub value: V,
 }
 
 impl<K: Clone, V: Clone> Cell<K, V> {
-    /// Creates a new cell with the given key and value.
+    /// Creates a new `Cell` containing the specified key-value pair.
+    ///
+    /// # Arguments
+    /// * `key` - The key to store in the cell
+    /// * `value` - The value associated with the key
+    ///
+    /// # Returns
+    /// A new `Cell` instance containing the provided key and value.
     pub fn new(key: K, value: V) -> Self {
         Cell { key, value }
     }
 }
 
-/// Represents a slot directory for a B+Tree node. A slot directory is a structure that holds a sorted list of keys and
-/// values in a way that allows for efficient access and modification of keys and values stored in a fixed-sixe memory
-/// region.
+/// Represents a slot directory for a B+Tree node.
+///
+/// A slot directory maintains a sorted collection of key-value pairs ([`Cell`]s) within a B+Tree node. Keys are kept in
+/// sorted order to enable efficient binary search operations. In the current implementation, cells are stored in a
+/// dynamically-sized vector for simplicity. The final implementation will use a fixed-size memory region (page buffer)
+/// to store cells on disk.
+///
+/// # Type Parameters
+/// * `K` - The key type, which must implement `Ord` and `Clone`
+/// * `V` - The value type, which must implement `Clone`
+///
+/// # Invariants
+/// * Keys are always maintained in sorted ascending order
+/// * No duplicate keys are allowed
 pub struct SlotDirectory<K: Ord + Clone, V: Clone> {
     cells: Vec<Cell<K, V>>,
 }
 
+/// An iterator over the cells in a [`SlotDirectory`].
+///
+/// This iterator yields immutable references to [`Cell`]s in sorted order by key. It is created by calling the
+/// [`SlotDirectory::iter`] method.
+///
+/// # Type Parameters
+/// * `'a` - The lifetime of the borrow from the [`SlotDirectory`]
+/// * `K` - The key type, which must implement `Ord` and `Clone`
+/// * `V` - The value type, which must implement `Clone`
 pub struct SlotDirectoryIterator<'a, K: Ord + Clone, V: Clone> {
     slot_directory: &'a SlotDirectory<K, V>,
     current_index: usize,
@@ -58,8 +98,10 @@ impl<K: Ord + Clone, V: Clone> SlotDirectory<K, V> {
     /// * `cell` - The cell to insert into the directory
     ///
     /// # Returns
-    /// * `Ok(())` if the insertion was successful
-    /// * `Err(SlotDirectoryError::KeyAlreadyExists)` if the key is already present in the directory
+    /// Returns `Ok(())` if the insertion was successful.
+    ///
+    /// # Errors
+    /// Returns `Err(SlotDirectoryError::KeyAlreadyExists)` if the key is already present in the directory.
     pub fn insert(&mut self, cell: Cell<K, V>) -> Result<(), SlotDirectoryError> {
         match self.cells.binary_search_by(|c| c.key.cmp(&cell.key)) {
             Ok(_) => Err(SlotDirectoryError::KeyAlreadyExists),
@@ -85,8 +127,12 @@ impl<K: Ord + Clone, V: Clone> SlotDirectory<K, V> {
     /// # Arguments
     /// * `index` - The zero-based index of the cell to retrieve
     ///
+    /// # Returns
+    /// Returns a copy of the cell at the given index.
+    ///
     /// # Errors
-    /// Returns `SlotDirectoryError::IndexOutOfBounds` if the index is greater than or equal to the collection length.
+    /// Returns `SlotDirectoryError::IndexOutOfBounds` if the index is greater than or equal to the number of cells in
+    /// the directory.
     pub fn get_cell(&self, index: usize) -> Result<Cell<K, V>, SlotDirectoryError> {
         if index >= self.len() {
             return Err(SlotDirectoryError::IndexOutOfBounds { index, size: self.len() });
@@ -96,13 +142,17 @@ impl<K: Ord + Clone, V: Clone> SlotDirectory<K, V> {
     }
 
     /// Returns an iterator over the cells in the `SlotDirectory`.
+    ///
+    /// The iterator yields cells in sorted order by key.
+    ///
+    /// # Returns
+    /// An iterator that yields references to cells (`&Cell<K, V>`) in ascending key order.
     pub fn iter(&self) -> SlotDirectoryIterator<K, V> {
         SlotDirectoryIterator { slot_directory: self, current_index: 0 }
     }
 }
 
 impl<K: Ord + Clone, V: Clone> Default for SlotDirectory<K, V> {
-    /// Creates a new, empty `SlotDirectory`.
     fn default() -> Self {
         SlotDirectory { cells: Vec::new() }
     }
