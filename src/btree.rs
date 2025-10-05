@@ -91,9 +91,8 @@ pub struct BTree<K, V> {
     nodes: HashMap<NodeId, Node<K, V>>,
     order: usize,
     root_node_id: NodeId,
+    next_node_id: NodeId,
 }
-
-// TODO : Implémenter et utiliser des méthodes helper pour les noeuds (get_node, get_node_mut, allocate_node, remove_node, etc.)
 
 impl<K, V> BTree<K, V> {
     /// Creates a new, empty `BTree` with the specified order.
@@ -119,7 +118,23 @@ impl<K, V> BTree<K, V> {
         let root_node = Node::<K, V>::Leaf(LeafNode::<K, V>::default());
         let mut nodes = HashMap::new();
         nodes.insert(0, root_node);
-        Ok(BTree::<K, V> { nodes, order, root_node_id: 0 })
+        Ok(BTree::<K, V> { nodes, order, root_node_id: 0, next_node_id: 1 })
+    }
+
+    /// Adds a new node to the tree and returns its assigned ID.
+    ///
+    /// This is an internal helper method used to allocate new nodes during tree operations.
+    ///
+    /// # Arguments
+    /// * `node` - The node to add to the tree
+    ///
+    /// # Returns
+    /// * `NodeId` - The unique ID assigned to the newly added node
+    fn register_new_node(&mut self, node: Node<K, V>) -> NodeId {
+        let new_node_id = self.next_node_id;
+        self.next_node_id += 1;
+        self.nodes.insert(new_node_id, node);
+        new_node_id
     }
 
     /// Retrieves a reference to a node by its ID.
@@ -175,7 +190,7 @@ impl<K: Clone + Ord, V: Clone> BTree<K, V> {
     /// # Errors
     /// * `BTreeError::KeyAlreadyExists` - If the key is already present in the tree
     pub fn insert(&mut self, cell: Cell<K, V>) -> Result<(), BTreeError> {
-        self.insert_recursive(self.root_node_id, cell)
+        self.insert_recursive(0, cell)
     }
 
     /// Recursively inserts a cell into the tree starting from the specified node.
@@ -417,7 +432,7 @@ impl<K: Clone + Ord, V: Clone> BTreeBuilder<K, V> {
     /// # Returns
     /// A fully constructed `BTree` instance
     fn build(self) -> BTree<K, V> {
-        BTree { nodes: self.nodes, order: self.order, root_node_id: 0 }
+        BTree { nodes: self.nodes, order: self.order, root_node_id: 0, next_node_id: self.next_node_id }
     }
 
     /// Adds a new leaf node to the B+Tree being built.
