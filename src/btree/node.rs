@@ -35,7 +35,6 @@ pub enum NodeError {
 /// This conversion maps slot directory errors to their corresponding node errors, wrapping unexpected errors in the
 /// `Unexpected` variant.
 impl From<SlotDirectoryError> for NodeError {
-    /// Converts a `SlotDirectoryError` into a `NodeError`.
     fn from(err: SlotDirectoryError) -> Self {
         match err {
             SlotDirectoryError::KeyAlreadyExists => NodeError::KeyAlreadyExists,

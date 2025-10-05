@@ -116,9 +116,7 @@ impl<K, V> BTree<K, V> {
         }
 
         let root_node = Node::<K, V>::Leaf(LeafNode::<K, V>::default());
-        let mut nodes = HashMap::new();
-        nodes.insert(0, root_node);
-        Ok(BTree::<K, V> { nodes, order, root_node_id: 0, next_node_id: 1 })
+        Ok(BTree::<K, V> { nodes: HashMap::from([(0, root_node)]), order, root_node_id: 0, next_node_id: 1 })
     }
 
     /// Adds a new node to the tree and returns its assigned ID.

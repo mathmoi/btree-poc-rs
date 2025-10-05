@@ -2,6 +2,10 @@ use std::fmt::Debug;
 
 use thiserror::Error;
 
+// =====================================================================================================================
+// Errors
+// =====================================================================================================================
+
 /// Errors that can occur during `SlotDirectory` operations.
 #[derive(Error, Debug)]
 pub enum SlotDirectoryError {
@@ -16,6 +20,10 @@ pub enum SlotDirectoryError {
     #[error("Index {index} out of bounds, SlotDirectory has {size} cells")]
     IndexOutOfBounds { index: usize, size: usize },
 }
+
+// =====================================================================================================================
+// Cell
+// =====================================================================================================================
 
 /// Represents a key-value pair stored in the slot directory.
 ///
@@ -44,6 +52,20 @@ impl<K, V> Cell<K, V> {
     }
 }
 
+impl<K, V> PartialEq for Cell<K, V>
+where
+    K: PartialEq,
+    V: PartialEq,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key && self.value == other.value
+    }
+}
+
+// =====================================================================================================================
+// SlotDirectory
+// =====================================================================================================================
+
 /// Represents a slot directory for a B+Tree node.
 ///
 /// A slot directory maintains a sorted collection of key-value pairs ([`Cell`]s) within a B+Tree node. Keys are kept in
@@ -62,27 +84,9 @@ pub struct SlotDirectory<K, V> {
     cells: Vec<Cell<K, V>>,
 }
 
-/// An iterator over the cells in a [`SlotDirectory`].
-///
-/// This iterator yields immutable references to [`Cell`]s in sorted order by key. It is created by calling the
-/// [`SlotDirectory::iter`] method.
-///
-/// # Type Parameters
-/// * `'a` - The lifetime of the borrow from the [`SlotDirectory`]
-/// * `K` - The key type, which must implement `Ord` and `Clone`
-/// * `V` - The value type, which must implement `Clone`
-pub struct SlotDirectoryIterator<'a, K, V> {
-    slot_directory: &'a SlotDirectory<K, V>,
-    current_index: usize,
-}
-
-impl<K, V> PartialEq for Cell<K, V>
-where
-    K: PartialEq,
-    V: PartialEq,
-{
-    fn eq(&self, other: &Self) -> bool {
-        self.key == other.key && self.value == other.value
+impl<K, V> Default for SlotDirectory<K, V> {
+    fn default() -> Self {
+        SlotDirectory { cells: Vec::new() }
     }
 }
 
@@ -149,10 +153,46 @@ impl<K: Ord + Clone, V: Clone> SlotDirectory<K, V> {
     }
 }
 
-impl<K, V> Default for SlotDirectory<K, V> {
-    fn default() -> Self {
-        SlotDirectory { cells: Vec::new() }
+impl<K: Debug, V> Debug for SlotDirectory<K, V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Keys: [")?;
+        for (i, cell) in self.cells.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{:?}", cell.key)?;
+        }
+        write!(f, "]")?;
+        Ok(())
     }
+}
+
+impl<K, V> PartialEq for SlotDirectory<K, V>
+where
+    K: Ord + Clone + PartialEq,
+    V: Clone + PartialEq,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.cells == other.cells
+    }
+}
+
+// =====================================================================================================================
+// SlotDirectoryIterator
+// =====================================================================================================================
+
+/// An iterator over the cells in a [`SlotDirectory`].
+///
+/// This iterator yields immutable references to [`Cell`]s in sorted order by key. It is created by calling the
+/// [`SlotDirectory::iter`] method.
+///
+/// # Type Parameters
+/// * `'a` - The lifetime of the borrow from the [`SlotDirectory`]
+/// * `K` - The key type, which must implement `Ord` and `Clone`
+/// * `V` - The value type, which must implement `Clone`
+pub struct SlotDirectoryIterator<'a, K, V> {
+    slot_directory: &'a SlotDirectory<K, V>,
+    current_index: usize,
 }
 
 impl<'a, K: Ord + Clone, V: Clone> Iterator for SlotDirectoryIterator<'a, K, V> {
@@ -177,30 +217,6 @@ impl<'a, K: Ord + Clone, V: Clone> Iterator for SlotDirectoryIterator<'a, K, V> 
 impl<'a, K: Ord + Clone, V: Clone> ExactSizeIterator for SlotDirectoryIterator<'a, K, V> {
     fn len(&self) -> usize {
         self.slot_directory.len() - self.current_index
-    }
-}
-
-impl<K: Debug, V> Debug for SlotDirectory<K, V> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Keys: [")?;
-        for (i, cell) in self.cells.iter().enumerate() {
-            if i > 0 {
-                write!(f, ", ")?;
-            }
-            write!(f, "{:?}", cell.key)?;
-        }
-        write!(f, "]")?;
-        Ok(())
-    }
-}
-
-impl<K, V> PartialEq for SlotDirectory<K, V>
-where
-    K: Ord + Clone + PartialEq,
-    V: Clone + PartialEq,
-{
-    fn eq(&self, other: &Self) -> bool {
-        self.cells == other.cells
     }
 }
 
