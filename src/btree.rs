@@ -95,7 +95,7 @@ pub struct BTree<K, V> {
 
 // TODO : Implémenter et utiliser des méthodes helper pour les noeuds (get_node, get_node_mut, allocate_node, remove_node, etc.)
 
-impl<K: Debug + Clone + Ord, V: Clone> BTree<K, V> {
+impl<K, V> BTree<K, V> {
     /// Creates a new, empty `BTree` with the specified order.
     ///
     /// The order determines the branching factor of the tree, which affects performance characteristics. Higher orders
@@ -122,8 +122,45 @@ impl<K: Debug + Clone + Ord, V: Clone> BTree<K, V> {
         Ok(BTree::<K, V> { nodes, order, root_node_id: 0 })
     }
 
-    // TODO : Implement search
+    /// Retrieves a reference to a node by its ID.
+    ///
+    /// The node ID must exist in the tree's node storage; otherwise, this method will panic. This is an internal helper
+    /// method used to access nodes during tree operations.
+    ///
+    /// # Arguments
+    /// * `node_id` - The ID of the node to retrieve
+    ///
+    /// # Returns
+    /// * `&Node<K, V>` - A reference to the node with the specified ID
+    ///
+    /// # Panics
+    /// Panics if the specified node ID does not exist in the tree's node storage. This indicates a bug in the tree
+    fn get_node(&self, node_id: NodeId) -> &Node<K, V> {
+        self.nodes.get(&node_id).expect("Node ID should exist in the tree")
+    }
 
+    /// Retrieves a mutable reference to a node by its ID.
+    ///
+    /// The node ID must exist in the tree's node storage; otherwise, this method will panic. This is an internal helper
+    /// method used to access nodes during tree operations.
+    ///
+    /// # Arguments
+    /// * `node_id` - The ID of the node to retrieve
+    ///
+    /// # Returns
+    /// * `&mut Node<K, V>` - A mutable reference to the node with the specified ID
+    ///
+    /// # Panics
+    /// Panics if the specified node ID does not exist in the tree's node storage. This indicates a bug in the tree
+    fn get_node_mut(&mut self, node_id: NodeId) -> &mut Node<K, V> {
+        self.nodes.get_mut(&node_id).expect("Node ID should exist in the tree")
+    }
+
+    // TODO : Implement search
+    // TODO : Implement deletion
+}
+
+impl<K: Clone + Ord, V: Clone> BTree<K, V> {
     /// Inserts a key-value pair into the B+Tree.
     ///
     /// The insertion maintains the B+Tree properties by recursively traversing to the appropriate leaf node and
@@ -160,7 +197,7 @@ impl<K: Debug + Clone + Ord, V: Clone> BTree<K, V> {
     /// Panics if the specified node ID does not exist in the tree's node storage. This indicates a bug in the tree
     /// implementation, as all node IDs passed to this method should be valid by invariant.
     fn insert_recursive(&mut self, node_id: NodeId, cell: Cell<K, V>) -> Result<(), BTreeError> {
-        let node = self.nodes.get_mut(&node_id).expect("Node ID should exist in the tree");
+        let node = self.get_node_mut(node_id);
 
         match node {
             Node::Leaf(leaf) => {
@@ -172,7 +209,9 @@ impl<K: Debug + Clone + Ord, V: Clone> BTree<K, V> {
             }
         }
     }
+}
 
+impl<K: Clone + Ord + Debug, V> BTree<K, V> {
     /// Formats a node and its descendants in a tree-like structure.
     ///
     /// This is an internal helper method used by the `Debug` implementation to recursively format the tree structure
@@ -195,7 +234,7 @@ impl<K: Debug + Clone + Ord, V: Clone> BTree<K, V> {
         f: &mut std::fmt::Formatter<'_>,
     ) -> std::fmt::Result {
         let connector = if is_last { "└── " } else { "├── " };
-        let node = self.nodes.get(&node_id).expect("Node ID should exist in the tree");
+        let node = self.get_node(node_id);
 
         writeln!(f, "{}{}{:?}", prefix, connector, node)?;
 
@@ -209,8 +248,6 @@ impl<K: Debug + Clone + Ord, V: Clone> BTree<K, V> {
         }
         Ok(())
     }
-
-    // TODO : Implement deletion
 }
 
 impl<K: Clone + Ord + PartialEq, V: Clone + PartialEq> BTree<K, V> {
@@ -227,12 +264,12 @@ impl<K: Clone + Ord + PartialEq, V: Clone + PartialEq> BTree<K, V> {
     /// # Returns
     /// `true` if the nodes and their entire subtrees are equal, `false` otherwise
     fn check_node_eq_recursive(&self, node_id: NodeId, other: &BTree<K, V>, other_node_id: NodeId) -> bool {
-        let self_node = self.nodes.get(&node_id);
-        let other_node = other.nodes.get(&other_node_id);
+        let self_node = self.get_node(node_id);
+        let other_node = other.get_node(other_node_id);
 
         match (self_node, other_node) {
-            (Some(Node::Leaf(self_leaf)), Some(Node::Leaf(other_leaf))) => self_leaf == other_leaf,
-            (Some(Node::Internal(self_internal)), Some(Node::Internal(other_internal))) => {
+            (Node::Leaf(self_leaf), Node::Leaf(other_leaf)) => self_leaf == other_leaf,
+            (Node::Internal(self_internal), Node::Internal(other_internal)) => {
                 if self_internal.len() != other_internal.len() {
                     return false;
                 }
@@ -325,6 +362,42 @@ impl<K, V> Default for BTreeBuilder<K, V> {
 
 #[cfg(test)]
 impl<K: Clone + Ord, V: Clone> BTreeBuilder<K, V> {
+    /// Retrieves a reference to a node by its ID.
+    ///
+    /// The node ID must exist in the builder's node storage; otherwise, this method will panic. This is an internal
+    /// helper
+    ///
+    /// # Arguments
+    /// * `node_id` - The ID of the node to retrieve
+    ///
+    /// # Returns
+    /// * `&Node<K, V>` - A reference to the node with the specified ID
+    ///
+    /// # Panics
+    /// Panics if the specified node ID does not exist in the builder's node storage. This indicates a bug in the
+    /// builder
+    fn get_node(&self, node_id: NodeId) -> &Node<K, V> {
+        self.nodes.get(&node_id).expect("Node ID should exist in the builder")
+    }
+
+    /// Retrieves a mutable reference to a node by its ID.
+    ///
+    /// The node ID must exist in the builder's node storage; otherwise, this method will panic. This is an internal
+    /// helper
+    ///
+    /// # Arguments
+    /// * `node_id` - The ID of the node to retrieve
+    ///
+    /// # Returns
+    /// * `&mut Node<K, V>` - A mutable reference to the node with the specified ID
+    ///
+    /// # Panics
+    /// Panics if the specified node ID does not exist in the builder's node storage. This indicates a bug in the
+    /// builder
+    fn get_node_mut(&mut self, node_id: NodeId) -> &mut Node<K, V> {
+        self.nodes.get_mut(&node_id).expect("Node ID should exist in the builder")
+    }
+
     /// Sets the order of the B+Tree to be built.
     ///
     /// # Arguments
@@ -415,11 +488,10 @@ impl<K: Clone + Ord, V: Clone> BTreeBuilder<K, V> {
 
         // If there is a parent node, we need to attach the new node to it.
         if let Some(parent_node_id) = self.node_id_stack.last() {
-            let parent_node =
-                match self.nodes.get_mut(parent_node_id).expect("Parent node should be present in the nodes map") {
-                    Node::Internal(internal) => internal,
-                    _ => return Err(BTreeBuilderError::ParentNodeIsNotInternalNode),
-                };
+            let parent_node = self
+                .get_node_mut(*parent_node_id)
+                .as_internal_mut()
+                .ok_or(BTreeBuilderError::ParentNodeIsNotInternalNode)?;
 
             if let Some(key) = key_opt {
                 parent_node.insert(Cell::new(key, new_node_id))?;
@@ -455,11 +527,8 @@ impl<K: Clone + Ord, V: Clone> BTreeBuilder<K, V> {
     /// * `BTreeBuilderError::CurrentNodeIsNotLeaf` - If the current node is not a leaf node
     /// * `BTreeBuilderError::NodeError` - If the key already exists in the leaf node
     fn add_key_value_pair(mut self, key: K, value: V) -> Result<Self, BTreeBuilderError> {
-        let node_id = self.node_id_stack.last().ok_or(BTreeBuilderError::NoCurrentNode)?;
-        let leaf_node = match self.nodes.get_mut(node_id) {
-            Some(Node::Leaf(leaf)) => leaf,
-            _ => return Err(BTreeBuilderError::CurrentNodeIsNotLeaf),
-        };
+        let node_id = *self.node_id_stack.last().ok_or(BTreeBuilderError::NoCurrentNode)?;
+        let leaf_node = self.get_node_mut(node_id).as_leaf_mut().ok_or(BTreeBuilderError::CurrentNodeIsNotLeaf)?;
 
         leaf_node.insert(Cell::new(key, value))?;
         Ok(self)

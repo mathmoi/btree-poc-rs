@@ -222,7 +222,55 @@ pub enum Node<K, V> {
     Internal(InternalNode<K>),
 }
 
-// TODO : Ajouter et utiliser des méthodes as_internal(), as_leaf() et leurs variantes mutables
+impl<K, V> Node<K, V> {
+    /// Returns a reference to the internal node if this node is an internal node, or `None` otherwise.
+    ///
+    /// # Returns
+    /// * `Some(&InternalNode<K>)` - If this node is an internal node
+    /// * `None` - If this node is a leaf node
+    pub fn as_internal(&self) -> Option<&InternalNode<K>> {
+        match self {
+            Node::Internal(internal) => Some(internal),
+            _ => None,
+        }
+    }
+
+    /// Returns a mutable reference to the internal node if this node is an internal node, or `None` otherwise.
+    ///
+    /// # Returns
+    /// * `Some(&mut InternalNode<K>)` - If this node is an internal node
+    /// * `None` - If this node is a leaf node
+    pub fn as_internal_mut(&mut self) -> Option<&mut InternalNode<K>> {
+        match self {
+            Node::Internal(internal) => Some(internal),
+            _ => None,
+        }
+    }
+
+    /// Returns a reference to the leaf node if this node is a leaf node, or `None` otherwise.
+    ///
+    /// # Returns
+    /// * `Some(&LeafNode<K, V>)` - If this node is a
+    /// * `None` - If this node is an internal node
+    pub fn as_leaf(&self) -> Option<&LeafNode<K, V>> {
+        match self {
+            Node::Leaf(leaf) => Some(leaf),
+            _ => None,
+        }
+    }
+
+    /// Returns a mutable reference to the leaf node if this node is a leaf node, or `None` otherwise.
+    ///
+    /// # Returns
+    /// * `Some(&mut LeafNode<K, V>)` - If this node is a leaf node
+    /// * `None` - If this node is an internal node
+    pub fn as_leaf_mut(&mut self) -> Option<&mut LeafNode<K, V>> {
+        match self {
+            Node::Leaf(leaf) => Some(leaf),
+            _ => None,
+        }
+    }
+}
 
 impl<K: Debug, V> Debug for Node<K, V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
