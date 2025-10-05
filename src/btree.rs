@@ -163,11 +163,10 @@ where
     /// * `BTreeError::KeyAlreadyExists` - If the key is already present in the node
     ///
     /// # Panics
-    /// Panics if the specified node ID does not exist in the tree's node storage.
+    /// Panics if the specified node ID does not exist in the tree's node storage. This indicates a bug in the tree
+    /// implementation, as all node IDs passed to this method should be valid by invariant.
     fn insert_recursive(&mut self, node_id: NodeId, cell: Cell<K, V>) -> Result<(), BTreeError> {
-        let Some(node) = self.nodes.get_mut(&node_id) else {
-            panic!("Node id {} not found", node_id); // TODO : Is there a better alternative to panicking here?
-        };
+        let node = self.nodes.get_mut(&node_id).expect("Node ID should exist in the tree");
 
         match node {
             Node::Leaf(leaf) => {
