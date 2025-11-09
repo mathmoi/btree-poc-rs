@@ -1,4 +1,4 @@
-use std::fmt::Debug;
+use std::{fmt::Debug, ops::Index, ptr};
 
 use thiserror::Error;
 
@@ -29,7 +29,7 @@ pub enum SlotDirectoryError {
 ///
 /// While this could be a simple tuple, a struct is used to allow control over the memory layout when cells are
 /// eventually stored in buffer pages on disk.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Cell<K, V> {
     /// The key component of this key-value pair.
     pub key: K,
@@ -52,13 +52,15 @@ impl<K, V> Cell<K, V> {
     }
 }
 
-impl<K, V> PartialEq for Cell<K, V>
-where
-    K: PartialEq,
-    V: PartialEq,
-{
-    fn eq(&self, other: &Self) -> bool {
-        self.key == other.key && self.value == other.value
+impl<K, V> From<(K, V)> for Cell<K, V> {
+    fn from(value: (K, V)) -> Self {
+        Cell { key: value.0, value: value.1 }
+    }
+}
+
+impl<K: Debug, V: Debug> Debug for Cell<K, V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Cell {{ key: {:?}, value: {:?} }}", self.key, self.value)
     }
 }
 
@@ -80,6 +82,7 @@ where
 /// # Invariants
 /// * Keys are always maintained in sorted ascending order
 /// * No duplicate keys are allowed
+#[derive(PartialEq, Eq)]
 pub struct SlotDirectory<K, V> {
     cells: Vec<Cell<K, V>>,
 }
@@ -90,7 +93,97 @@ impl<K, V> Default for SlotDirectory<K, V> {
     }
 }
 
-impl<K: Ord + Clone, V: Clone> SlotDirectory<K, V> {
+impl<K, V> SlotDirectory<K, V> {
+    /// Returns the number of key-value pairs in the `SlotDirectory`.
+    pub fn len(&self) -> usize {
+        self.cells.len()
+    }
+
+    /// Returns whether the `SlotDirectory` is overflowing given the specified order.
+    ///
+    /// A `SlotDirectory` is considered overflowing if it contains more than `order - 1` keys.
+    ///
+    /// # Arguments
+    /// * `order` - The order of the B+Tree containing this slot directory
+    ///
+    /// # Returns
+    /// Returns `true` if the number of keys exceeds `order - 1`, otherwise returns `false`.
+    pub fn is_overflowing(&self, order: usize) -> bool {
+        self.len() > order - 1
+    }
+
+    /// Returns whether the `SlotDirectory` is underflowing given the specified order.
+    ///
+    /// A `SlotDirectory` is considered underflowing if it contains fewer than `(order - 1) / 2`
+    /// keys.
+    ///
+    /// # Arguments
+    /// * `order` - The order of the B+Tree containing this slot directory
+    ///
+    /// # Returns
+    /// Returns `true` if the number of keys is less than `(order - 1) / 2`, otherwise returns
+    /// `false`.
+    pub fn is_underflowing(&self, order: usize) -> bool {
+        self.len() < (order - 1) / 2
+    }
+
+    /// Returns `true` if the `SlotDirectory` is empty.
+    pub fn is_empty(&self) -> bool {
+        self.cells.is_empty()
+    }
+
+    /// Returns an iterator over the cells in the `SlotDirectory`.
+    ///
+    /// The iterator yields cells in sorted order by key.
+    ///
+    /// # Returns
+    /// An iterator that yields references to cells (`&Cell<K, V>`) in ascending key order.
+    pub fn iter(&self) -> SlotDirectoryIterator<K, V> {
+        SlotDirectoryIterator { slot_directory: self, current_index: 0 }
+    }
+
+    /// Clears all cells from the `SlotDirectory`.
+    pub fn clear(&mut self) {
+        self.cells.clear();
+    }
+
+    /// Removes the cell at the specified index from the `SlotDirectory`.
+    ///
+    /// # Arguments
+    /// * `index` - The zero-based index of the cell to remove
+    ///
+    /// # Returns
+    /// The removed cell.
+    ///
+    /// # Panics
+    /// Panics if the index is out of bounds.
+    pub fn remove_at(&mut self, index: usize) -> Cell<K, V> {
+        self.cells.remove(index)
+    }
+
+    /// Drains a range of cells from the `SlotDirectory`.
+    ///
+    /// The specified range of cells is removed from the directory and returned as an iterator. The remaining cells are
+    /// shifted to close the gap left by the drained cells. The SlotDirectory is in an undefined state until the Drain
+    /// iterator is fully consumed or dropped.
+    ///
+    /// # Arguments
+    /// * `range` - The range of indices to drain from the directory
+    ///
+    /// # Returns
+    /// An iterator that yields the drained cells.
+    ///
+    /// # Panics
+    /// Panics if the range is invalid (start > end or end > length of the directory).
+    pub fn drain(&mut self, range: std::ops::Range<usize>) -> Drain<K, V> {
+        assert!(range.start <= range.end && range.end <= self.len());
+
+        let start = range.start;
+        Drain { slot_directory: self, range, current_index: start }
+    }
+}
+
+impl<K: Ord, V> SlotDirectory<K, V> {
     /// Inserts a cell into the `SlotDirectory`.
     ///
     /// The cell is inserted while maintaining the sorted order of keys.
@@ -112,17 +205,9 @@ impl<K: Ord + Clone, V: Clone> SlotDirectory<K, V> {
             }
         }
     }
+}
 
-    /// Returns the number of key-value pairs in the `SlotDirectory`.
-    pub fn len(&self) -> usize {
-        self.cells.len()
-    }
-
-    /// Returns `true` if the `SlotDirectory` is empty.
-    pub fn is_empty(&self) -> bool {
-        self.cells.is_empty()
-    }
-
+impl<K: Clone, V: Clone> SlotDirectory<K, V> {
     /// Returns a copy of the cell at the specified index.
     ///
     /// # Arguments
@@ -134,22 +219,18 @@ impl<K: Ord + Clone, V: Clone> SlotDirectory<K, V> {
     /// # Errors
     /// Returns `SlotDirectoryError::IndexOutOfBounds` if the index is greater than or equal to the number of cells in
     /// the directory.
-    pub fn get_cell(&self, index: usize) -> Result<Cell<K, V>, SlotDirectoryError> {
+    pub fn cell_at(&self, index: usize) -> Result<Cell<K, V>, SlotDirectoryError> {
         if index >= self.len() {
             return Err(SlotDirectoryError::IndexOutOfBounds { index, size: self.len() });
         }
 
         Ok(self.cells[index].clone())
     }
+}
 
-    /// Returns an iterator over the cells in the `SlotDirectory`.
-    ///
-    /// The iterator yields cells in sorted order by key.
-    ///
-    /// # Returns
-    /// An iterator that yields references to cells (`&Cell<K, V>`) in ascending key order.
-    pub fn iter(&self) -> SlotDirectoryIterator<K, V> {
-        SlotDirectoryIterator { slot_directory: self, current_index: 0 }
+impl<K, V, const N: usize> From<[(K, V); N]> for SlotDirectory<K, V> {
+    fn from(value: [(K, V); N]) -> Self {
+        SlotDirectory { cells: value.into_iter().map(|x| x.into()).collect() }
     }
 }
 
@@ -167,13 +248,11 @@ impl<K: Debug, V> Debug for SlotDirectory<K, V> {
     }
 }
 
-impl<K, V> PartialEq for SlotDirectory<K, V>
-where
-    K: Ord + Clone + PartialEq,
-    V: Clone + PartialEq,
-{
-    fn eq(&self, other: &Self) -> bool {
-        self.cells == other.cells
+impl<K, V> Index<usize> for SlotDirectory<K, V> {
+    type Output = Cell<K, V>;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.cells[index]
     }
 }
 
@@ -220,6 +299,57 @@ impl<'a, K: Ord + Clone, V: Clone> ExactSizeIterator for SlotDirectoryIterator<'
     }
 }
 
+// =====================================================================================================================
+// SlotDirectory Drain
+// =====================================================================================================================
+
+pub struct Drain<'a, K, V> {
+    slot_directory: &'a mut SlotDirectory<K, V>,
+    range: std::ops::Range<usize>,
+    current_index: usize,
+}
+
+impl<'a, K, V> Iterator for Drain<'a, K, V> {
+    type Item = Cell<K, V>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current_index >= self.range.end {
+            return None;
+        }
+
+        let cell = unsafe { ptr::read(&self.slot_directory.cells[self.current_index]) };
+        self.current_index += 1;
+        Some(cell)
+    }
+}
+
+impl<'a, K, V> Drop for Drain<'a, K, V> {
+    fn drop(&mut self) {
+        // consume remaining items
+        for _ in self.by_ref() {}
+
+        // shift remaining items to close the gap
+        let tail_len = self.slot_directory.len() - self.range.end;
+        if tail_len > 0 {
+            unsafe {
+                let src = self.slot_directory.cells.as_ptr().add(self.range.end);
+                let dst = self.slot_directory.cells.as_mut_ptr().add(self.range.start);
+                ptr::copy(src, dst, tail_len);
+            }
+        }
+
+        // adjust length
+        let new_len = self.slot_directory.len() - self.range.len();
+        unsafe {
+            self.slot_directory.cells.set_len(new_len);
+        }
+    }
+}
+
+// =====================================================================================================================
+// Tests
+// =====================================================================================================================
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,11 +362,8 @@ mod tests {
 
     #[test]
     fn after_insert_new_slot_len_is_1() {
-        const KEY: u32 = 1;
-        const VALUE: u32 = 42;
-
         let mut slot = SlotDirectory::<u32, u32>::default();
-        slot.insert(Cell::new(KEY, VALUE)).unwrap();
+        slot.insert(Cell::new(1, 42)).unwrap();
         assert_eq!(slot.len(), 1);
     }
 
@@ -244,39 +371,99 @@ mod tests {
     fn after_insert_can_read_back_key_values_by_index() {
         const KEY: u32 = 1;
         const VALUE: u32 = 42;
-
         let mut slot = SlotDirectory::<u32, u32>::default();
+
         slot.insert(Cell::new(KEY, VALUE)).unwrap();
-        let cell = slot.get_cell(0).unwrap();
+        let cell = slot.cell_at(0).unwrap();
+
         assert_eq!(cell.key, KEY);
         assert_eq!(cell.value, VALUE);
     }
 
     #[test]
     fn inserting_two_keys_lowest_key_is_at_index_0() {
-        const KEY1: u32 = 1;
-        const VALUE1: u32 = 42;
-        const KEY2: u32 = 2;
-        const VALUE2: u32 = 43;
-        const KEY: u32 = 1;
-        const VALUE: u32 = 42;
+        let mut slot = SlotDirectory::<u32, u32>::default();
 
-        let mut slot = SlotDirectory::<u32, u32>::default();
-        slot.insert(Cell::new(KEY, VALUE)).unwrap();
-        assert_eq!(slot.len(), 1);
-        let mut slot = SlotDirectory::<u32, u32>::default();
-        slot.insert(Cell::new(KEY2, VALUE2)).unwrap();
-        slot.insert(Cell::new(KEY1, VALUE1)).unwrap();
-        let cell_at_index_0 = slot.get_cell(0).unwrap();
-        assert_eq!(cell_at_index_0.key, KEY1);
-        assert_eq!(cell_at_index_0.value, VALUE1);
+        slot.insert(Cell::new(2, 2)).unwrap();
+        slot.insert(Cell::new(1, 1)).unwrap();
+
+        assert_eq!(slot, SlotDirectory::from([(1, 1), (2, 2)]));
     }
 
     #[test]
     fn inserting_existing_key_returns_key_already_exists() {
-        let mut slot = SlotDirectory::<u32, u32>::default();
-        slot.insert(Cell::new(1, 42)).unwrap();
+        let mut slot = SlotDirectory::<u32, u32>::from([(1, 42)]);
+
         let result = slot.insert(Cell::new(1, 43));
+
         assert!(matches!(result, Err(SlotDirectoryError::KeyAlreadyExists)));
+    }
+
+    #[test]
+    fn after_calling_clear_len_is_0() {
+        let mut slot = SlotDirectory::<u32, u32>::from([(1, 42)]);
+
+        slot.clear();
+
+        assert_eq!(slot.len(), 0);
+    }
+
+    #[test]
+    fn draining_zero_items() {
+        let mut slot = SlotDirectory::<u32, u32>::from([(1, 42), (2, 43), (3, 44), (4, 45)]);
+        let expected_remaining = SlotDirectory::<u32, u32>::from([(1, 42), (2, 43), (3, 44), (4, 45)]);
+
+        let drained: Vec<Cell<u32, u32>> = slot.drain(2..2).collect();
+
+        assert!(drained.is_empty());
+        assert_eq!(slot, expected_remaining);
+    }
+
+    #[test]
+    fn draining_one_item_from_middle() {
+        let mut slot = SlotDirectory::<u32, u32>::from([(1, 42), (2, 43), (3, 44), (4, 45)]);
+        let expected = vec![Cell::new(2, 43)];
+        let expected_remaining = SlotDirectory::<u32, u32>::from([(1, 42), (3, 44), (4, 45)]);
+
+        let drained: Vec<Cell<u32, u32>> = slot.drain(1..2).collect();
+
+        assert_eq!(drained, expected);
+        assert_eq!(slot, expected_remaining);
+    }
+
+    #[test]
+    fn draining_two_items_from_the_start() {
+        let mut slot = SlotDirectory::<u32, u32>::from([(1, 42), (2, 43), (3, 44)]);
+        let expected = vec![Cell::new(1, 42), Cell::new(2, 43)];
+        let expected_remaining = SlotDirectory::<u32, u32>::from([(3, 44)]);
+
+        let drained: Vec<Cell<u32, u32>> = slot.drain(0..2).collect();
+
+        assert_eq!(drained, expected);
+        assert_eq!(slot, expected_remaining);
+    }
+
+    #[test]
+    fn draining_two_items_from_middle() {
+        let mut slot = SlotDirectory::<u32, u32>::from([(1, 42), (2, 43), (3, 44), (4, 45)]);
+        let expected = vec![Cell::new(2, 43), Cell::new(3, 44)];
+        let expected_remaining = SlotDirectory::<u32, u32>::from([(1, 42), (4, 45)]);
+
+        let drained: Vec<Cell<u32, u32>> = slot.drain(1..3).collect();
+
+        assert_eq!(drained, expected);
+        assert_eq!(slot, expected_remaining);
+    }
+
+    #[test]
+    fn draining_two_items_from_the_end() {
+        let mut slot = SlotDirectory::<u32, u32>::from([(1, 42), (2, 43), (3, 44)]);
+        let expected = vec![Cell::new(2, 43), Cell::new(3, 44)];
+        let expected_remaining = SlotDirectory::<u32, u32>::from([(1, 42)]);
+
+        let drained: Vec<Cell<u32, u32>> = slot.drain(1..3).collect();
+
+        assert_eq!(drained, expected);
+        assert_eq!(slot, expected_remaining);
     }
 }

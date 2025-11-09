@@ -2,8 +2,15 @@ mod node;
 mod slot_directory;
 
 use node::{Cell, LeafNode, Node, NodeError, NodeId};
-use std::{collections::HashMap, fmt::Debug};
+use std::{
+    cell::{Ref, RefCell, RefMut},
+    collections::HashMap,
+    fmt::Debug,
+    iter,
+};
 use thiserror::Error;
+
+use crate::btree::node::InternalNode;
 
 // =====================================================================================================================
 // Errors
@@ -173,7 +180,7 @@ impl<K, V> BTree<K, V> {
     // TODO : Implement deletion
 }
 
-impl<K: Clone + Ord, V: Clone> BTree<K, V> {
+impl<K: Debug + Clone + Ord, V: Debug + Clone> BTree<K, V> {
     /// Inserts a key-value pair into the B+Tree.
     ///
     /// The insertion maintains the B+Tree properties by recursively traversing to the appropriate leaf node and
@@ -188,7 +195,7 @@ impl<K: Clone + Ord, V: Clone> BTree<K, V> {
     /// # Errors
     /// * `BTreeError::KeyAlreadyExists` - If the key is already present in the tree
     pub fn insert(&mut self, cell: Cell<K, V>) -> Result<(), BTreeError> {
-        self.insert_recursive(0, cell)
+        self.insert_recursive(0, cell, Vec::new())
     }
 
     /// Recursively inserts a cell into the tree starting from the specified node.
@@ -209,17 +216,213 @@ impl<K: Clone + Ord, V: Clone> BTree<K, V> {
     /// # Panics
     /// Panics if the specified node ID does not exist in the tree's node storage. This indicates a bug in the tree
     /// implementation, as all node IDs passed to this method should be valid by invariant.
-    fn insert_recursive(&mut self, node_id: NodeId, cell: Cell<K, V>) -> Result<(), BTreeError> {
-        let node = self.get_node_mut(node_id);
+    fn insert_recursive(&mut self, node_id: NodeId, cell: Cell<K, V>, parents: Vec<NodeId>) -> Result<(), BTreeError> {
+        let mut node = self.get_node_mut(node_id);
 
-        match node {
+        match &mut *node {
             Node::Leaf(leaf) => {
                 leaf.insert(cell)?;
+                drop(node);
+                self.balance_leaf(node_id, parents);
                 Ok(())
             }
             Node::Internal(_internal) => {
                 unimplemented!("Internal node insertion not yet implemented");
             }
+        }
+    }
+
+    /// Calculates a balanced distribution of cells across the specified number of nodes.
+    ///
+    /// This is an internal helper method used during balancing operations to determine how many cells should be
+    /// assigned to each node to achieve a balanced state. When the cells cannot be evenly distributed, the method
+    /// ensures that the first few nodes receive one extra cell until all cells are allocated.
+    ///
+    /// # Arguments
+    /// * `cells_count` - The total number of cells to distribute
+    /// * `nodes_count` - The number of nodes to distribute the cells across
+    ///
+    /// # Returns
+    /// * `Vec<usize>` - A vector where each element represents the number of cells assigned to the corresponding node
+    fn calculate_balanced_cells_distribution(cells_count: usize, nodes_count: usize) -> Vec<usize> {
+        let base_cells_per_node = cells_count / nodes_count;
+        let remainder = cells_count % nodes_count;
+
+        std::iter::repeat_n(base_cells_per_node + 1, remainder)
+            .chain(std::iter::repeat_n(base_cells_per_node, nodes_count - remainder))
+            .collect()
+    }
+
+    /// Balance the tree starting from the nodes in the provided stack.
+    ///
+    /// This is an internal helper method that performs the actual balancing logic after insertions or deletions.
+    ///
+    /// # Algorithm
+    ///
+    /// First we check if the node to balance is the root node (single node in the node_id_stack). If it is the case,
+    /// we check if the root node is overflowing. If it is, we need to create a new node, move all the cells from
+    /// the root node to the new node and set the new node as a chilf of the root node and continue balancing from the
+    /// new node. In this way, the overflowing node will be split and the root node remains the same. This is important
+    /// because the root node id must remains the same.
+    ///
+    /// # Arguments
+    /// * `node_id` - The ID of the node to start balancing from
+    /// * `parents` - A stack of parent node IDs leading to the node to balance from the root of the tree
+    ///
+    /// # References
+    /// * [Antonio Sarosi's implementation of a BTree](https://github.com/antoniosarosi/mkdb/blob/master/src/storage/btree.rs)
+    fn balance_leaf(&mut self, mut node_id: NodeId, mut parents: Vec<NodeId>) {
+        let is_root = parents.is_empty();
+
+        // Special case for the root node
+        if is_root {
+            let is_overflowing = self.get_node(node_id).is_overflowing(self.order);
+            if is_overflowing {
+                let new_id = self.grow_new_root(node_id); // TODO : Could we need to balance a root we just grew?
+
+                parents.push(node_id);
+                node_id = new_id;
+            } else {
+                return;
+            }
+        }
+
+        // Find the index of the current node in it's parent
+        let parent_id = parents.last().cloned().expect("There should be a parent");
+        let parent = self.get_node_mut(parent_id).as_internal_mut_unchecked();
+        let index_in_parent =
+            parent.children().position(|id| id == node_id).expect("Node should be a child of its parent");
+
+        // Find the index of the sibling nodes that will participate in the balancing
+        let (start_sibling_index, end_sibling_index) =
+            BTree::<K, V>::get_index_siblings_balance(index_in_parent, parent.len());
+
+        // Removes the nodes participating in the balancing from the parent
+        let mut siblings = parent.drain(start_sibling_index..=end_sibling_index).collect::<Vec<_>>();
+
+        // Removes the cells from the nodes to balance
+        let mut cells: Vec<Cell<K, V>> = Vec::new(); // TODO : Should this be a VecDeque?
+        for sibling in &siblings {
+            let node = self.get_node_mut(sibling.value).as_leaf_mut().expect("Node should be a leaf"); // TODO : Generalize for internal nodes
+            cells.extend(node.drain(..));
+        }
+
+        let last_separator_key = siblings.pop().expect("There should be at least one sibling to balance").key;
+
+        let mut sibling_ids: Vec<NodeId> = siblings.iter().map(|cell| cell.value).collect();
+
+        // Calculate the number of nodes needed after balancing
+        let cells_per_node = self.order - 1; // TODO : would be self.order for internal nodes
+        let num_nodes_needed = cells.len().div_ceil(cells_per_node);
+
+        // TODO : From here maybe siblings should not be a Vec<Cell<K, V>> but a Vec<NodeId>?
+        // TODO : Remove excess nodes if we have more than needed
+        // Add new nodes if we needs more
+        sibling_ids.resize_with(num_nodes_needed, || {
+            self.register_new_node(Node::Leaf(LeafNode::<K, V>::default())) // TODO : Generalize for internal nodes
+        });
+
+        // Calculate the balanced distribution of cells across the nodes
+        let balanced_distribution = BTree::<K, V>::calculate_balanced_cells_distribution(cells.len(), num_nodes_needed);
+
+        // Distribute the cells to the nodes according to the balanced distribution and insert them back to the parent
+        // TODO : Would it be more efficient to do this backwards to avoid shifting on drain?
+        for (index, (&sibling_id, &distribution_count)) in
+            sibling_ids.iter().zip(balanced_distribution.iter()).enumerate()
+        {
+            let node = self.get_node_mut(sibling_id).as_leaf_mut().expect("Node should be a leaf"); // TODO : Generalize for internal nodes
+            for cell in cells.drain(0..distribution_count) {
+                node.insert(cell).expect("Insertion should succeed, key uniqueness is guaranteed");
+            }
+
+            let parent = self.get_node_mut(parent_id).as_internal_mut_unchecked();
+            if index < sibling_ids.len() - 1 {
+                parent
+                    .insert(Cell {
+                        key: cells.first().expect("There should be cells remaining").key.clone(),
+                        value: sibling_id,
+                    })
+                    .expect("Insertion into parent should succeed");
+            } else {
+                match last_separator_key.clone() {
+                    Some(key) => {
+                        parent.insert(Cell { key, value: sibling_id }).expect("Insertion into parent should succeed")
+                    }
+                    None => parent.set_right_most_child(sibling_id),
+                }
+            }
+        }
+
+        // let mut cells: Vec<Cell<K, V>> = Vec::new();
+        // for sibling_index in start_sibling_index..=end_sibling_index {
+        //     let sibling = self.get_node(parent.child_at(sibling_index));
+
+        // NEXT : Continue here
+
+        // let sibling_index = if sibling_index < parent.len() - 1 {
+
+        // let sibling_node_id = parent.children().nth(sibling_index).expect("Sibling node should exist");
+        // let sibling_node = self.get_node_mut(sibling_node_id).as_leaf_mut().expect("Node should be a leaf");
+
+        // cells.extend(sibling_node.iter().cloned());
+        // sibling_node.clear();
+        //}
+
+        // Removes the cells from the nodes to balance
+        // let node = self.get_node_mut(node_id).as_leaf_mut().expect("Node should be a leaf");
+        // let mut cells: Vec<Cell<K, V>> = node.iter().cloned().collect();
+        // node.clear();
+
+        // TODO : Create a new node, add cells in both nodes, connect the new nodes to the parent...
+    }
+
+    /// Creates a new root node and makes the existing root its child.
+    ///
+    /// This is an internal helper method used during balancing when the root node overflows. It creates a new internal
+    /// node, moves the existing root node to be a child of the new root, and updates the tree structure accordingly.
+    ///
+    /// The id of the root node remains the same. The old root that becomes a child of the new root gets a new id.
+    ///
+    /// # Arguments
+    /// * `node_id` - The ID of the current root node that is overflowing
+    ///
+    /// # Returns
+    /// * `NodeId` - The ID of the newly created child node (the old root)
+    fn grow_new_root(&mut self, node_id: NodeId) -> NodeId {
+        // We replace the root with a new node with the same id. The original root becomes a child of the new root.
+        let original_root = self.nodes.remove(&node_id).expect("Node should exist");
+        let new_id = self.register_new_node(original_root);
+
+        let mut new_root = InternalNode::<K>::default();
+        new_root.set_right_most_child(new_id);
+        self.nodes.insert(node_id, Node::Internal(new_root));
+        new_id
+    }
+
+    /// Determines the indices of sibling nodes for balancing based on the index of the current node in its parent.
+    ///
+    /// This is an internal helper function used during balancing operations to identify which sibling nodes should
+    /// be involved in the balancing process. It considers edge cases where the current node is the first or last child.
+    ///
+    /// # Arguments
+    /// * `index_in_parent` - The index of the current node in its parent
+    /// * `parent_size` - The total number of children in the parent node
+    ///
+    /// # Returns
+    /// * `(usize, usize)` - A tuple containing the start and end indices of the sibling nodes to consider for balancing
+    fn get_index_siblings_balance(index_in_parent: usize, parent_size: usize) -> (usize, usize) {
+        if parent_size <= 2 {
+            // All children are used
+            (0, parent_size - 1)
+        } else if index_in_parent == 0 {
+            // First child, use the two right siblings
+            (0, 2)
+        } else if index_in_parent == parent_size - 1 {
+            // Last child, use the two left siblings
+            (parent_size - 3, parent_size - 1)
+        } else {
+            // Normal case, use left and right sibling
+            (index_in_parent - 1, index_in_parent + 1)
         }
     }
 }
@@ -571,97 +774,116 @@ impl<K: Clone + Ord, V: Clone> BTreeBuilder<K, V> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::error::Error;
 
-    mod btree_tests {
-        use super::*;
-        use std::error::Error;
+    mod private_tests {
+        use super::super::*;
 
         #[test]
-        fn when_inserting_key_value_pair_into_empty_btree_succeeds() -> Result<(), Box<dyn Error>> {
-            let mut btree = BTree::<u32, u32>::new(3)?;
-            let result = btree.insert(Cell::new(1, 42));
-            assert!(result.is_ok());
-            Ok(())
+        fn test_calculate_balanced_cells_distribution() {
+            let distribution = BTree::<u32, u32>::calculate_balanced_cells_distribution(36, 3);
+            assert_eq!(distribution, vec![12, 12, 12]);
+
+            let distribution = BTree::<u32, u32>::calculate_balanced_cells_distribution(10, 3);
+            assert_eq!(distribution, vec![4, 3, 3]);
+
+            let distribution = BTree::<u32, u32>::calculate_balanced_cells_distribution(7, 2);
+            assert_eq!(distribution, vec![4, 3]);
+
+            let distribution = BTree::<u32, u32>::calculate_balanced_cells_distribution(5, 5);
+            assert_eq!(distribution, vec![1, 1, 1, 1, 1]);
+
+            let distribution = BTree::<u32, u32>::calculate_balanced_cells_distribution(0, 3);
+            assert_eq!(distribution, vec![0, 0, 0]);
         }
+    }
 
-        #[test]
-        fn when_inserting_a_key_already_present_insertions_fails() -> Result<(), Box<dyn Error>> {
-            #[rustfmt::skip]
+    #[test]
+    fn when_inserting_key_value_pair_into_empty_btree_succeeds() -> Result<(), Box<dyn Error>> {
+        let mut btree = BTree::<u32, u32>::new(3)?;
+        let result = btree.insert(Cell::new(1, 42));
+        assert!(result.is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn when_inserting_a_key_already_present_insertions_fails() -> Result<(), Box<dyn Error>> {
+        #[rustfmt::skip]
             let mut btree = BTreeBuilder::<u32, u32>::default()
                 .add_leaf_node(None)?
                     .add_key_value_pair(1, 42)?
                 .end_node()?
                 .build();
-            let result = btree.insert(Cell::new(1, 43));
-            assert!(matches!(result, Err(BTreeError::KeyAlreadyExists)));
-            Ok(())
-        }
+        let result = btree.insert(Cell::new(1, 43));
+        assert!(matches!(result, Err(BTreeError::KeyAlreadyExists)));
+        Ok(())
+    }
 
-        #[test]
-        fn when_inserting_two_different_keys_both_insertions_succeed() -> Result<(), Box<dyn Error>> {
-            #[rustfmt::skip]
+    #[test]
+    fn when_inserting_two_different_keys_both_insertions_succeed() -> Result<(), Box<dyn Error>> {
+        #[rustfmt::skip]
             let mut btree = BTreeBuilder::<u32, u32>::default()
                 .add_leaf_node(None)?
                     .add_key_value_pair(1, 42)?
                 .end_node()?
                 .build();
-            let result = btree.insert(Cell::new(2, 43));
-            assert!(matches!(result, Ok(())));
-            Ok(())
-        }
+        let result = btree.insert(Cell::new(2, 43));
+        assert!(matches!(result, Ok(())));
+        Ok(())
+    }
 
-        // /// When the btree is only a root node and the root node is full, inserting a new key-value pair should create a
-        // /// new root node and split the existing root node into two child nodes.
-        // ///
-        // /// ```text
-        // ///              Insert 3
-        // ///                 |
-        // ///                 v
-        // ///           +-----+-----+
-        // ///           |  1  |  2  |
-        // ///           +-----+-----+
-        // ///
-        // ///
-        // ///              Result
-        // ///                 |
-        // ///                 v
-        // ///           +-----+-----+
-        // ///       +-- |  3  |     |--+
-        // ///       |   +-----+-----+  |
-        // ///       v                  v
-        // /// +-----+-----+      +-----+-----+
-        // /// |  1  |  2  |      |  3  |     |
-        // /// +-----+-----+      +-----+-----+
-        // /// ```
-        // #[test]
-        // fn when_root_node_full_insertion_creates_new_root() {
-        //     #[rustfmt::skip]
-        //     let mut btree = BTreeBuilder::<u32, u32>::default()
-        //         .with_order(3)
-        //         .add_leaf_node()
-        //             .add_key_value_pair(1, 42)
-        //             .add_key_value_pair(2, 43)
-        //         .end_node()
-        //         .build();
+    /// When the btree is only a root node and the root node is full, inserting a new key-value pair should create a new
+    /// root node and split the existing root node into two child nodes.
+    ///
+    /// ```text
+    ///              Insert 3
+    ///                 |
+    ///                 v
+    ///           +-----+-----+
+    ///           |  1  |  2  |
+    ///           +-----+-----+
+    ///
+    ///
+    ///              Result
+    ///                 |
+    ///                 v
+    ///           +-----+-----+
+    ///       +-- |  3  |     |--+
+    ///       |   +-----+-----+  |
+    ///       v                  v
+    /// +-----+-----+      +-----+-----+
+    /// |  1  |  2  |      |  3  |     |
+    /// +-----+-----+      +-----+-----+
+    /// ```
+    #[test]
+    fn when_root_node_full_insertion_creates_new_root() -> Result<(), Box<dyn Error>> {
+        #[rustfmt::skip]
+            let mut btree = BTreeBuilder::<u32, u32>::default()
+                .with_order(3)
+                .add_leaf_node(None)?
+                    .add_key_value_pair(1, 42)?
+                    .add_key_value_pair(2, 43)?
+                .end_node()?
+                .build();
 
-        //     #[rustfmt::skip]
-        //     let expected = BTreeBuilder::<u32, u32>::default()
-        //         .with_order(3)
-        //         .add_internal_node()
-        //             .add_leaf_node() // Left child of new root
-        //                 .add_key_value_pair(1, 42)
-        //                 .add_key_value_pair(2, 43)
-        //             .end_node()
-        //             .add_leaf_node() // Right child of new root
-        //                 .add_key_value_pair(3, 44)
-        //             .end_node()
-        //         .end_node()
-        //         .build();
+        #[rustfmt::skip]
+            let expected = BTreeBuilder::<u32, u32>::default()
+                .with_order(3)
+                .add_internal_node(None)?
+                    .add_leaf_node(Some(3))? // Left child of new root
+                        .add_key_value_pair(1, 42)?
+                        .add_key_value_pair(2, 43)?
+                    .end_node()?
+                    .add_leaf_node(None)? // Right child of new root
+                        .add_key_value_pair(3, 44)?
+                    .end_node()?
+                .end_node()?
+                .build();
 
-        //     let result = btree.insert(3, 44);
+        let result = btree.insert(Cell::new(3, 44));
 
-        //     assert!(matches!(result, Ok(())));
-        //     assert_eq!(expected, btree);
-        // }
+        assert!(matches!(result, Ok(())));
+        assert_eq!(expected, btree);
+        Ok(())
     }
 }
