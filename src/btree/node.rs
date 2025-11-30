@@ -219,6 +219,26 @@ impl<K: Clone + Ord> InternalNode<K> {
         self.slot_directory.insert(cell)?;
         Ok(())
     }
+
+    /// Finds the child node ID that should be followed for the given key.
+    ///
+    /// # Arguments
+    /// * `key` - The key to search for
+    ///
+    /// # Returns
+    /// * `NodeId` - The ID of the child node to follow for the given key
+    pub fn find_child_id(&self, key: &K) -> NodeId {
+        let index = match self.slot_directory.find_index(key) {
+            Ok(index) => index + 1,
+            Err(index) => index,
+        };
+
+        if index < self.slot_directory.len() {
+            self.slot_directory.cell_at(index).expect("There should be an Cell at this index").value
+        } else {
+            self.right_most_child.expect("Right most child should exist")
+        }
+    }
 }
 
 impl<K: Clone> InternalNode<K> {

@@ -3,10 +3,8 @@ mod slot_directory;
 
 use node::{Cell, LeafNode, Node, NodeError, NodeId};
 use std::{
-    cell::{Ref, RefCell, RefMut},
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     fmt::Debug,
-    iter,
 };
 use thiserror::Error;
 
@@ -100,6 +98,8 @@ pub struct BTree<K, V> {
     root_node_id: NodeId,
     next_node_id: NodeId,
 }
+
+// TODO : leaf nodes should be linked together for range queries
 
 impl<K, V> BTree<K, V> {
     /// Creates a new, empty `BTree` with the specified order.
@@ -216,18 +216,24 @@ impl<K: Debug + Clone + Ord, V: Debug + Clone> BTree<K, V> {
     /// # Panics
     /// Panics if the specified node ID does not exist in the tree's node storage. This indicates a bug in the tree
     /// implementation, as all node IDs passed to this method should be valid by invariant.
-    fn insert_recursive(&mut self, node_id: NodeId, cell: Cell<K, V>, parents: Vec<NodeId>) -> Result<(), BTreeError> {
-        let mut node = self.get_node_mut(node_id);
+    fn insert_recursive(
+        &mut self,
+        node_id: NodeId,
+        cell: Cell<K, V>,
+        mut parents: Vec<NodeId>,
+    ) -> Result<(), BTreeError> {
+        let node = self.get_node_mut(node_id);
 
         match &mut *node {
             Node::Leaf(leaf) => {
                 leaf.insert(cell)?;
-                drop(node);
                 self.balance_leaf(node_id, parents);
                 Ok(())
             }
-            Node::Internal(_internal) => {
-                unimplemented!("Internal node insertion not yet implemented");
+            Node::Internal(internal) => {
+                let child_id = internal.find_child_id(&cell.key);
+                parents.push(node_id);
+                self.insert_recursive(child_id, cell, parents)
             }
         }
     }
@@ -294,20 +300,19 @@ impl<K: Debug + Clone + Ord, V: Debug + Clone> BTree<K, V> {
             parent.children().position(|id| id == node_id).expect("Node should be a child of its parent");
 
         // Find the index of the sibling nodes that will participate in the balancing
-        let (start_sibling_index, end_sibling_index) =
-            BTree::<K, V>::get_index_siblings_balance(index_in_parent, parent.len());
+        let (start_sibling_index, end_sibling_index) = Self::get_index_siblings_balance(index_in_parent, parent.len());
 
         // Removes the nodes participating in the balancing from the parent
-        let mut siblings = parent.drain(start_sibling_index..=end_sibling_index).collect::<Vec<_>>();
+        let siblings: Vec<_> = parent.drain(start_sibling_index..=end_sibling_index).collect();
 
         // Removes the cells from the nodes to balance
-        let mut cells: Vec<Cell<K, V>> = Vec::new(); // TODO : Should this be a VecDeque?
+        let mut cells: VecDeque<Cell<K, V>> = VecDeque::new();
         for sibling in &siblings {
             let node = self.get_node_mut(sibling.value).as_leaf_mut().expect("Node should be a leaf"); // TODO : Generalize for internal nodes
             cells.extend(node.drain(..));
         }
 
-        let last_separator_key = siblings.pop().expect("There should be at least one sibling to balance").key;
+        let last_separator_key = siblings.last().expect("There should be at least one sibling to balance").key.clone();
 
         let mut sibling_ids: Vec<NodeId> = siblings.iter().map(|cell| cell.value).collect();
 
@@ -315,8 +320,8 @@ impl<K: Debug + Clone + Ord, V: Debug + Clone> BTree<K, V> {
         let cells_per_node = self.order - 1; // TODO : would be self.order for internal nodes
         let num_nodes_needed = cells.len().div_ceil(cells_per_node);
 
-        // TODO : From here maybe siblings should not be a Vec<Cell<K, V>> but a Vec<NodeId>?
         // TODO : Remove excess nodes if we have more than needed
+
         // Add new nodes if we needs more
         sibling_ids.resize_with(num_nodes_needed, || {
             self.register_new_node(Node::Leaf(LeafNode::<K, V>::default())) // TODO : Generalize for internal nodes
@@ -326,20 +331,21 @@ impl<K: Debug + Clone + Ord, V: Debug + Clone> BTree<K, V> {
         let balanced_distribution = BTree::<K, V>::calculate_balanced_cells_distribution(cells.len(), num_nodes_needed);
 
         // Distribute the cells to the nodes according to the balanced distribution and insert them back to the parent
-        // TODO : Would it be more efficient to do this backwards to avoid shifting on drain?
         for (index, (&sibling_id, &distribution_count)) in
             sibling_ids.iter().zip(balanced_distribution.iter()).enumerate()
         {
+            // Distribute the cells to the sibling node
             let node = self.get_node_mut(sibling_id).as_leaf_mut().expect("Node should be a leaf"); // TODO : Generalize for internal nodes
             for cell in cells.drain(0..distribution_count) {
                 node.insert(cell).expect("Insertion should succeed, key uniqueness is guaranteed");
             }
 
+            // Insert the sibling back to the parent
             let parent = self.get_node_mut(parent_id).as_internal_mut_unchecked();
             if index < sibling_ids.len() - 1 {
                 parent
                     .insert(Cell {
-                        key: cells.first().expect("There should be cells remaining").key.clone(),
+                        key: cells.front().expect("There should be cells remaining").key.clone(),
                         value: sibling_id,
                     })
                     .expect("Insertion into parent should succeed");
@@ -352,28 +358,6 @@ impl<K: Debug + Clone + Ord, V: Debug + Clone> BTree<K, V> {
                 }
             }
         }
-
-        // let mut cells: Vec<Cell<K, V>> = Vec::new();
-        // for sibling_index in start_sibling_index..=end_sibling_index {
-        //     let sibling = self.get_node(parent.child_at(sibling_index));
-
-        // NEXT : Continue here
-
-        // let sibling_index = if sibling_index < parent.len() - 1 {
-
-        // let sibling_node_id = parent.children().nth(sibling_index).expect("Sibling node should exist");
-        // let sibling_node = self.get_node_mut(sibling_node_id).as_leaf_mut().expect("Node should be a leaf");
-
-        // cells.extend(sibling_node.iter().cloned());
-        // sibling_node.clear();
-        //}
-
-        // Removes the cells from the nodes to balance
-        // let node = self.get_node_mut(node_id).as_leaf_mut().expect("Node should be a leaf");
-        // let mut cells: Vec<Cell<K, V>> = node.iter().cloned().collect();
-        // node.clear();
-
-        // TODO : Create a new node, add cells in both nodes, connect the new nodes to the parent...
     }
 
     /// Creates a new root node and makes the existing root its child.
@@ -858,29 +842,353 @@ mod tests {
     #[test]
     fn when_root_node_full_insertion_creates_new_root() -> Result<(), Box<dyn Error>> {
         #[rustfmt::skip]
-            let mut btree = BTreeBuilder::<u32, u32>::default()
-                .with_order(3)
-                .add_leaf_node(None)?
+        let mut btree = BTreeBuilder::<u32, u32>::default()
+            .with_order(3)
+            .add_leaf_node(None)?
+                .add_key_value_pair(1, 42)?
+                .add_key_value_pair(2, 43)?
+            .end_node()?
+            .build();
+
+        #[rustfmt::skip]
+        let expected = BTreeBuilder::<u32, u32>::default()
+            .with_order(3)
+            .add_internal_node(None)?
+                .add_leaf_node(Some(3))? // Left child of new root
                     .add_key_value_pair(1, 42)?
                     .add_key_value_pair(2, 43)?
                 .end_node()?
-                .build();
-
-        #[rustfmt::skip]
-            let expected = BTreeBuilder::<u32, u32>::default()
-                .with_order(3)
-                .add_internal_node(None)?
-                    .add_leaf_node(Some(3))? // Left child of new root
-                        .add_key_value_pair(1, 42)?
-                        .add_key_value_pair(2, 43)?
-                    .end_node()?
-                    .add_leaf_node(None)? // Right child of new root
-                        .add_key_value_pair(3, 44)?
-                    .end_node()?
+                .add_leaf_node(None)? // Right child of new root
+                    .add_key_value_pair(3, 44)?
                 .end_node()?
-                .build();
+            .end_node()?
+            .build();
 
         let result = btree.insert(Cell::new(3, 44));
+
+        assert!(matches!(result, Ok(())));
+        assert_eq!(expected, btree);
+        Ok(())
+    }
+
+    /// When a leaf node overflows but as sibling node with space available, the overflowing node should send a cell to the sibling
+    /// to balance the tree without needing to split nodes.
+    ///
+    /// ```text                                                                                                                 
+    ///                 Insert 35                                                                                   
+    ///                     |                                                                                       
+    ///                     |                                                                                       
+    ///               +-----v-----+                                                                                 
+    ///       +------ | 30  | 50  |-------+                                                                         
+    ///       |       +-----+-----+       |                                                                         
+    ///       |             |             |                                                                         
+    ///       |             |             |                                                                         
+    /// +-----v-----+ +-----v-----+ +-----v-----+                                                                  -
+    /// | 10  | 20  | | 30  | 40  | | 50  |     |                                                                   
+    /// +-----+-----+ +-----+-----+ +-----+-----+                                                                   
+    ///                                                                                                             
+    ///                   Result                                                                                    
+    ///                     |                                                                                       
+    ///                     |                                                                                       
+    ///               +-----v-----+                                                                                 
+    ///       +------ | 30  | 40  --------+                                                                         
+    ///       |       +-----+-----+       |                                                                         
+    ///       |             |             |                                                                         
+    ///       |             |             |                                                                         
+    /// +-----v-----+ +-----v-----+ +-----v-----+                                                                   
+    /// | 10  | 20  | | 30  | 35  | | 40  | 50  |                                                                   
+    /// +-----+-----+ +-----+-----+ +-----+-----+   
+    /// ```
+    #[test]
+    fn when_leaf_node_overflows_can_send_cell_to_sibling() -> Result<(), Box<dyn Error>> {
+        #[rustfmt::skip]
+        let mut btree = BTreeBuilder::<u32, u32>::default()
+            .with_order(3)
+            .add_internal_node(None)?
+                .add_leaf_node(Some(30))?
+                    .add_key_value_pair(10, 10)?
+                    .add_key_value_pair(20, 20)?
+                .end_node()?
+                .add_leaf_node(Some(50))?
+                    .add_key_value_pair(30, 30)?
+                    .add_key_value_pair(40, 40)?
+                .end_node()?
+                .add_leaf_node(None)?
+                    .add_key_value_pair(50, 50)?
+                .end_node()?
+            .build();
+
+        #[rustfmt::skip]
+        let expected = BTreeBuilder::<u32, u32>::default()
+            .with_order(3)
+            .add_internal_node(None)?
+                .add_leaf_node(Some(30))?
+                    .add_key_value_pair(10, 10)?
+                    .add_key_value_pair(20, 20)?
+                .end_node()?
+                .add_leaf_node(Some(40))?
+                    .add_key_value_pair(30, 30)?
+                    .add_key_value_pair(35, 35)? // New key inserted here
+                .end_node()?
+                .add_leaf_node(None)?
+                    .add_key_value_pair(40, 40)?
+                    .add_key_value_pair(50, 50)?
+                .end_node()?
+            .build();
+
+        let result = btree.insert(Cell::new(35, 35));
+
+        assert!(matches!(result, Ok(())));
+        assert_eq!(expected, btree);
+        Ok(())
+    }
+
+    /// When an overflowing node is the first child of its parent, the first three nodes are used for balancing.
+    ///
+    /// ```text
+    ///                                     Insert 25                                                               
+    ///                                         |                                                                   
+    ///                                         |                                                                   
+    ///                                +-----+--v--+-----+                                                          
+    ///           +---------------------  40 | 70  | 80  ---------------------+                                     
+    ///           |                    +-----/-----\-----+                    |                                     
+    ///           |                         /       \                         |                                     
+    ///           |                        /         \                        |                                     
+    ///           |                       /           \                       |                                     
+    ///           |                      /             \                      |                                     
+    ///           |                     /               \                     |                                     
+    ///           |                    /                 \                    |                                     
+    ///  +-----+--v--+-----+ +-----+--v--+-----+ +-----+--v--+-----+ +-----+--v--+-----+                            
+    ///  | 10  | 20  | 30  | | 40  | 50  | 60  | | 70  |     |     | | 80  |     |     |                            
+    ///  +-----+-----+-----+ +-----+-----+-----+ +-----+-----+-----+ +-----+-----+-----+                            
+    ///                                                                                                             
+    ///                                       Result                                                                
+    ///                                         |                                                                   
+    ///                                         |                                                                   
+    ///                                +-----+--v--+-----+                                                          
+    ///           +---------------------  30 | 60  | 80  ---------------------+                                     
+    ///           |                    +-----/-----\-----+                    |                                     
+    ///           |                         /       \                         |                                     
+    ///           |                        /         \                        |                                     
+    ///           |                       /           \                       |                                     
+    ///           |                      /             \                      |                                     
+    ///           |                     /               \                     |                                     
+    ///           |                    /                 \                    |                                     
+    ///  +-----+--v--+-----+ +-----+--v--+-----+ +-----+--v--+-----+ +-----+--v--+-----+                            
+    ///  | 10  | 20  | 25  | | 30  | 40  | 50  | | 60  | 70  |     | | 80  |     |     |                            
+    ///  +-----+-----+-----+ +-----+-----+-----+ +-----+-----+-----+ +-----+-----+-----+
+    /// ```
+    #[test]
+    fn when_overflowing_node_is_the_first_child_first_three_nodes_are_used_for_balancing() -> Result<(), Box<dyn Error>>
+    {
+        #[rustfmt::skip]
+        let mut btree = BTreeBuilder::<u32, u32>::default()
+            .with_order(4)
+            .add_internal_node(None)?
+                .add_leaf_node(Some(40))?
+                    .add_key_value_pair(10, 10)?
+                    .add_key_value_pair(20, 20)?
+                    .add_key_value_pair(30, 30)?
+                .end_node()?
+                .add_leaf_node(Some(70))?
+                    .add_key_value_pair(40, 40)?
+                    .add_key_value_pair(50, 50)?
+                    .add_key_value_pair(60, 60)?
+                .end_node()?
+                .add_leaf_node(Some(80))?
+                    .add_key_value_pair(70, 70)?
+                .end_node()?
+                .add_leaf_node(None)?
+                    .add_key_value_pair(80, 80)?
+                .end_node()?
+            .end_node()?
+            .build();
+
+        #[rustfmt::skip]
+        let expected = BTreeBuilder::<u32, u32>::default()
+            .with_order(4)
+            .add_internal_node(None)?
+                .add_leaf_node(Some(30))?
+                    .add_key_value_pair(10, 10)?
+                    .add_key_value_pair(20, 20)?
+                    .add_key_value_pair(25, 25)?
+                .end_node()?
+                .add_leaf_node(Some(60))?
+                    .add_key_value_pair(30, 30)?
+                    .add_key_value_pair(40, 40)?
+                    .add_key_value_pair(50, 50)?
+                .end_node()?
+                .add_leaf_node(Some(80))?
+                    .add_key_value_pair(60, 60)?
+                    .add_key_value_pair(70, 70)?
+                .end_node()?
+                .add_leaf_node(None)?
+                    .add_key_value_pair(80, 80)?
+                .end_node()?
+            .end_node()?
+            .build();
+
+        let result = btree.insert(Cell::new(25, 25));
+
+        assert!(matches!(result, Ok(())));
+        assert_eq!(expected, btree);
+        Ok(())
+    }
+
+    /// When a leaf node overflows and no sibling has space available, the leaf node should split and promote a key
+    /// to the parent.
+    ///
+    /// ```text
+    ///                          Insert 70                                                                           
+    ///                             |                                                                               
+    ///                             v                                                                               
+    ///                    +-----+-----+-----+                                                                      
+    ///                 +--| 40  |     |     |--+                                                                   
+    ///                 |  +-----+-----+-----+  |                                                                   
+    ///                 |                       |                                                                   
+    ///                 |                       |                                                                   
+    ///                 |                       |                                                                   
+    ///        +-----+--v--+-----+     +-----+--v--+-----+                                                          
+    ///        | 10  | 20  | 30  |     | 40  | 50  | 60  |                                                          
+    ///        +-----+-----+-----+     +-----+-----+-----+                                                          
+    ///                                                                                                             
+    ///                           Result                                                                            
+    ///                             |                                                                               
+    ///                             v                                                                               
+    ///                    +-----+-----+-----+                                                                      
+    ///          +---------| 40  | 60  |     |-----------+                                                          
+    ///          |         +-----+--|--+-----+           |                                                          
+    ///          |                  |                    |                                                          
+    ///          |                  |                    |                                                          
+    /// +-----+--v--+-----+ +-----+-v---+-----+ +-----+--v--+-----+                                                 
+    /// | 10  | 20  | 30  | | 40  | 50  |     | | 60  | 70  |     |                                                 
+    /// +-----+-----+-----+ +-----+-----+-----+ +-----+-----+-----+  
+    /// ```
+    #[test]
+    fn leaf_node_overflowing_needs_to_split() -> Result<(), Box<dyn Error>> {
+        #[rustfmt::skip]
+        let mut btree = BTreeBuilder::<u32, u32>::default()
+            .with_order(4)
+            .add_internal_node(None)?
+                .add_leaf_node(Some(40))?
+                    .add_key_value_pair(10, 10)?
+                    .add_key_value_pair(20, 20)?
+                    .add_key_value_pair(30, 30)?
+                .end_node()?
+                .add_leaf_node(None)?
+                    .add_key_value_pair(40, 40)?
+                    .add_key_value_pair(50, 50)?
+                    .add_key_value_pair(60, 60)?
+                .end_node()?
+            .end_node()?
+            .build();
+
+        #[rustfmt::skip]
+        let expected = BTreeBuilder::<u32, u32>::default()
+            .with_order(4)
+            .add_internal_node(None)?
+                .add_leaf_node(Some(40))?
+                    .add_key_value_pair(10, 10)?
+                    .add_key_value_pair(20, 20)?
+                    .add_key_value_pair(30, 30)?
+                .end_node()?
+                .add_leaf_node(Some(60))?
+                    .add_key_value_pair(40, 40)?
+                    .add_key_value_pair(50, 50)?
+                .end_node()?
+                .add_leaf_node(None)?
+                    .add_key_value_pair(60, 60)?
+                    .add_key_value_pair(70, 70)?
+                .end_node()?
+            .end_node()?
+            .build();
+
+        let result = btree.insert(Cell::new(70, 70));
+
+        assert!(matches!(result, Ok(())));
+        assert_eq!(expected, btree);
+        Ok(())
+    }
+
+    /// When a leaf node splits and the parent node overflows as a result, the parent node should also split and promote
+    /// a key to its parent.
+    ///
+    /// ```text
+    ///                          Insert 35                                                                          
+    ///                              |                                                                              
+    ///                              v                                                                              
+    ///                        +-----+-----+                                                                        
+    ///                +-------- 30  | 50  --------+                                                                
+    ///                |       +-----|-----+       |                                                                
+    ///                |             |             |                                                                
+    ///                |             |             |                                                                
+    ///          +-----v-----+ +-----v-----+ +-----v-----+                                                          
+    ///          | 10  | 20  | | 30  | 40  | | 50  | 60  |                                                          
+    ///          +-----+-----+ +-----+-----+ +-----+-----+                                                          
+    ///                                                                                                             
+    ///                            Result                                                                           
+    ///                              |                                                                              
+    ///                              v                                                                              
+    ///                        +-----+-----+                                                                        
+    ///               +--------- 40  |     -----------+                                                             
+    ///               |        +-----+-----+          |                                                             
+    ///               |                               |                                                             
+    ///         +-----v-----+                   +-----v-----+                                                       
+    ///       +-- 30  |     --+               +-- 60  |     --+                                                     
+    ///       | +-----+-----+ |               | +-----+-----+ |                                                     
+    ///       |               |               |               |                                                     
+    /// +-----v-----+   +-----v-----+   +-----v-----+   +-----v-----+                                               
+    /// | 10  | 20  |   | 30  | 35  |   | 40  | 50  |   | 60  |     |                                               
+    /// +-----+-----+   +-----+-----+   +-----+-----+   +-----+-----+    
+    /// ```  
+    #[test]
+    fn leaf_node_split_causes_parent_to_overflow_and_split() -> Result<(), Box<dyn Error>> {
+        #[rustfmt::skip]
+        let mut btree = BTreeBuilder::<u32, u32>::default()
+            .with_order(3)
+            .add_internal_node(None)?
+                .add_leaf_node(Some(30))?
+                    .add_key_value_pair(10, 10)?
+                    .add_key_value_pair(20, 20)?
+                .end_node()?
+                .add_leaf_node(Some(50))?
+                    .add_key_value_pair(30, 30)?
+                    .add_key_value_pair(40, 40)?
+                .end_node()?
+                .add_leaf_node(None)?
+                    .add_key_value_pair(50, 50)?
+                    .add_key_value_pair(60, 60)?
+                .end_node()?
+            .end_node()?
+            .build();
+
+        #[rustfmt::skip]
+        let expected = BTreeBuilder::<u32, u32>::default()
+            .with_order(3)
+            .add_internal_node(None)?
+                .add_internal_node(Some(40))?
+                    .add_leaf_node(Some(30))?
+                        .add_key_value_pair(10, 10)?
+                        .add_key_value_pair(20, 20)?
+                    .end_node()?
+                    .add_leaf_node(None)? 
+                        .add_key_value_pair(30, 30)?
+                        .add_key_value_pair(35, 35)?
+                    .end_node()?
+                .end_node()?
+                .add_internal_node(None)?
+                    .add_leaf_node(Some(60))?
+                        .add_key_value_pair(40, 40)?
+                        .add_key_value_pair(50, 50)?
+                    .end_node()?
+                    .add_leaf_node(None)?
+                        .add_key_value_pair(60, 60)?
+                    .end_node()?
+                .end_node()?
+            .end_node()?
+            .build();
+
+        let result = btree.insert(Cell::new(35, 35));
 
         assert!(matches!(result, Ok(())));
         assert_eq!(expected, btree);

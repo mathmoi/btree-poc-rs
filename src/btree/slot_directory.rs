@@ -184,6 +184,19 @@ impl<K, V> SlotDirectory<K, V> {
 }
 
 impl<K: Ord, V> SlotDirectory<K, V> {
+    /// Finds the index of the specified key in the `SlotDirectory` wheteher it exists or not.
+    ///
+    /// # Arguments
+    /// * `key` - The key to search for
+    ///
+    /// # Returns
+    /// * `Ok(index)` if the key is found, where `index` is the position of the key in the directory
+    /// * `Err(index)` if the key is not found, where `index` is the position where the key can be inserted to maintain
+    ///   sorted order
+    pub fn find_index(&self, key: &K) -> Result<usize, usize> {
+        self.cells.binary_search_by(|c| c.key.cmp(key))
+    }
+
     /// Inserts a cell into the `SlotDirectory`.
     ///
     /// The cell is inserted while maintaining the sorted order of keys.
