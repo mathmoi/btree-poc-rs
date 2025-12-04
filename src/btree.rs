@@ -3,10 +3,8 @@ mod slot_directory;
 
 use node::{Cell, LeafNode, Node, NodeError, NodeId};
 use std::{
-    cell::{Ref, RefCell, RefMut},
     collections::HashMap,
-    fmt::Debug,
-    iter,
+    fmt::Debug
 };
 use thiserror::Error;
 
@@ -217,12 +215,11 @@ impl<K: Debug + Clone + Ord, V: Debug + Clone> BTree<K, V> {
     /// Panics if the specified node ID does not exist in the tree's node storage. This indicates a bug in the tree
     /// implementation, as all node IDs passed to this method should be valid by invariant.
     fn insert_recursive(&mut self, node_id: NodeId, cell: Cell<K, V>, parents: Vec<NodeId>) -> Result<(), BTreeError> {
-        let mut node = self.get_node_mut(node_id);
+        let node = self.get_node_mut(node_id);
 
         match &mut *node {
             Node::Leaf(leaf) => {
                 leaf.insert(cell)?;
-                drop(node);
                 self.balance_leaf(node_id, parents);
                 Ok(())
             }

@@ -138,7 +138,7 @@ impl<K, V> SlotDirectory<K, V> {
     ///
     /// # Returns
     /// An iterator that yields references to cells (`&Cell<K, V>`) in ascending key order.
-    pub fn iter(&self) -> SlotDirectoryIterator<K, V> {
+    pub fn iter<'a>(&'a self) -> SlotDirectoryIterator<'a, K, V> {
         SlotDirectoryIterator { slot_directory: self, current_index: 0 }
     }
 
@@ -175,7 +175,7 @@ impl<K, V> SlotDirectory<K, V> {
     ///
     /// # Panics
     /// Panics if the range is invalid (start > end or end > length of the directory).
-    pub fn drain(&mut self, range: std::ops::Range<usize>) -> Drain<K, V> {
+    pub fn drain<'a>(&'a mut self, range: std::ops::Range<usize>) -> Drain<'a, K, V> {
         assert!(range.start <= range.end && range.end <= self.len());
 
         let start = range.start;
