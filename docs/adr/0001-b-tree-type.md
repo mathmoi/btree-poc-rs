@@ -1,6 +1,6 @@
 # ADR-0001: B-Tree type
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR-0002: Reconsideration of the B-Tree type decision](./0002-b-tree-type.md)
 - **Date:** 2025-12-23
 
 ## Context
