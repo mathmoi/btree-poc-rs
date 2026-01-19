@@ -11,6 +11,48 @@ use thiserror::Error;
 use crate::btree::node::InternalNode;
 
 // =====================================================================================================================
+// BalanceCell - Helper enum for unified balancing
+// =====================================================================================================================
+
+/// A cell type that can hold either a leaf cell or an internal cell.
+///
+/// This enum is used during balancing operations to handle both leaf and internal nodes
+/// uniformly. It allows the balancing algorithm to work with a single collection of cells
+/// regardless of the node type being balanced.
+enum BalanceCell<K, V> {
+    /// A cell from a leaf node containing a key-value pair.
+    Leaf(Cell<K, V>),
+    /// A cell from an internal node containing an optional key and a child node ID.
+    Internal(Cell<Option<K>, NodeId>),
+}
+
+impl<K: Clone, V> BalanceCell<K, V> {
+    /// Returns a reference to the key, if present.
+    fn key(&self) -> Option<&K> {
+        match self {
+            BalanceCell::Leaf(cell) => Some(&cell.key),
+            BalanceCell::Internal(cell) => cell.key.as_ref(),
+        }
+    }
+
+    /// Converts this cell into a leaf cell, returning `None` if it's an internal cell.
+    fn into_leaf_cell(self) -> Option<Cell<K, V>> {
+        match self {
+            BalanceCell::Leaf(cell) => Some(cell),
+            BalanceCell::Internal(_) => None,
+        }
+    }
+
+    /// Converts this cell into an internal cell, returning `None` if it's a leaf cell.
+    fn into_internal_cell(self) -> Option<Cell<Option<K>, NodeId>> {
+        match self {
+            BalanceCell::Leaf(_) => None,
+            BalanceCell::Internal(cell) => Some(cell),
+        }
+    }
+}
+
+// =====================================================================================================================
 // Errors
 // =====================================================================================================================
 
@@ -259,207 +301,290 @@ impl<K: Debug + Clone + Ord, V: Debug + Clone> BTree<K, V> {
             .collect()
     }
 
-    fn balance_internal(&mut self, node_id: NodeId, mut parents: Vec<NodeId>) {
-        let is_root = parents.is_empty();
-
-        // Special case for the root node
-        let mut node_id = node_id;
-        if is_root {
-            let is_overflowing = self.get_node(node_id).is_overflowing(self.order);
-            if is_overflowing {
-                let new_id = self.grow_new_root(node_id); // TODO : Could we need to balance a root we just grew?
-
-                parents.push(node_id);
-                node_id = new_id;
-            } else {
-                return; // TODO : Could we need to balance a root that is not overflowing? What if it is underflowing? Is this even possible?
-            }
-        }
-
-        // Find the index of the current node in it's parent
-        let parent_id = parents.last().cloned().expect("There should be a parent");
-        let parent = self.get_node_mut(parent_id).as_internal_mut_unchecked();
-        let index_in_parent =
-            parent.children().position(|id| id == node_id).expect("Node should be a child of its parent");
-
-        // Find the index of the sibling nodes that will participate in the balancing
-        let (start_sibling_index, end_sibling_index) = Self::get_index_siblings_balance(index_in_parent, parent.len());
-
-        // Removes the nodes participating in the balancing from the parent
-        let siblings: Vec<_> = parent.drain(start_sibling_index..=end_sibling_index).collect();
-
-        // Removes the cells from the nodes to balance
-        let mut cells: VecDeque<Cell<Option<K>, NodeId>> = VecDeque::new();
-        for sibling in &siblings {
-            let node = self.get_node_mut(sibling.value).as_internal_mut().expect("Node should be internal");
-            let mut iter = node.drain(..);
-            cells.extend(std::iter::from_fn(|| {
-                let item = iter.next()?;
-                let key = match item.key {
-                    Some(key) => Some(key),
-                    None => sibling.key.clone(),
-                };
-                Some(Cell::new(key, item.value))
-            }));
-        }
-
-        let last_separator_key = siblings.last().expect("There should be at least one sibling to balance").key.clone();
-
-        let mut sibling_ids: Vec<NodeId> = siblings.iter().map(|cell| cell.value).collect();
-
-        // Calculate the number of nodes needed after balancing
-        let cells_per_node = self.order;
-        let num_nodes_needed = cells.len().div_ceil(cells_per_node);
-
-        // TODO : Remove excess nodes if we have more than needed
-
-        // Add new nodes if we needs more
-        sibling_ids
-            .resize_with(num_nodes_needed, || self.register_new_node(Node::Internal(InternalNode::<K>::default())));
-
-        // Calculate the balanced distribution of cells across the nodes
-        let balanced_distribution = BTree::<K, V>::calculate_balanced_cells_distribution(cells.len(), num_nodes_needed);
-
-        // Distribute the cells to the nodes according to the balanced distribution and insert them back to the parent
-        for (index, (&sibling_id, &distribution_count)) in
-            sibling_ids.iter().zip(balanced_distribution.iter()).enumerate()
-        {
-            // Distribute the cells to the sibling node
-            let node = self.get_node_mut(sibling_id).as_internal_mut().expect("Node should be internal");
-            for cell in cells.drain(0..distribution_count - 1) {
-                node.insert(Cell::new(cell.key.expect("Cells that are not the last should have a key"), cell.value))
-                    .expect("Insertion should succeed, key uniqueness is guaranteed");
-            }
-            let last_cells = cells.pop_front().expect("There is always items remaining in cells at this point");
-            node.set_right_most_child(last_cells.value);
-
-            // Insert the sibling back to the parent
-            let parent = self.get_node_mut(parent_id).as_internal_mut_unchecked();
-            if index < sibling_ids.len() - 1 {
-                parent
-                    .insert(Cell {
-                        key: last_cells.key.expect("Only the last cell does not have a value"),
-                        value: sibling_id,
-                    })
-                    .expect("Insertion into parent should succeed");
-            } else {
-                match last_separator_key.clone() {
-                    Some(key) => {
-                        parent.insert(Cell { key, value: sibling_id }).expect("Insertion into parent should succeed")
-                    }
-                    None => parent.set_right_most_child(sibling_id),
-                }
-            }
-        }
-
-        if let Some(parent_node_id) = parents.pop() {
-            self.balance_internal(parent_node_id, parents);
-        }
-    }
-
-    /// Balance the tree starting from the nodes in the provided stack.
+    /// Balance the tree starting from the given node, propagating up to the root if needed.
     ///
-    /// This is an internal helper method that performs the actual balancing logic after insertions or deletions.
+    /// This method handles balancing for both leaf and internal nodes. When a node overflows after
+    /// an insertion, this method redistributes cells among sibling nodes or splits the node if
+    /// necessary. If the parent node overflows as a result, balancing continues recursively up the
+    /// tree.
     ///
     /// # Algorithm
     ///
-    /// First we check if the node to balance is the root node (single node in the node_id_stack). If it is the case,
-    /// we check if the root node is overflowing. If it is, we need to create a new node, move all the cells from
-    /// the root node to the new node and set the new node as a chilf of the root node and continue balancing from the
-    /// new node. In this way, the overflowing node will be split and the root node remains the same. This is important
-    /// because the root node id must remains the same.
+    /// First we check if the node to balance is the root node (empty parents stack). If the root is
+    /// overflowing, we create a new internal node that becomes the new root, and the original root
+    /// becomes its child. This preserves the root node ID.
+    ///
+    /// For non-root nodes, we:
+    /// 1. Find sibling nodes to participate in balancing (up to 3 nodes)
+    /// 2. Extract all cells from these siblings
+    /// 3. Calculate an optimal distribution across the required number of nodes
+    /// 4. Redistribute cells and reinsert nodes into the parent
+    /// 5. Recursively balance the parent if needed
     ///
     /// # Arguments
     /// * `node_id` - The ID of the node to start balancing from
-    /// * `parents` - A stack of parent node IDs leading to the node to balance from the root of the tree
+    /// * `parents` - A stack of parent node IDs leading to the node from the root
+    /// * `is_leaf` - Whether the node being balanced is a leaf node
     ///
     /// # References
     /// * [Antonio Sarosi's implementation of a BTree](https://github.com/antoniosarosi/mkdb/blob/master/src/storage/btree.rs)
-    fn balance_leaf(&mut self, mut node_id: NodeId, mut parents: Vec<NodeId>) {
+    fn balance(&mut self, node_id: NodeId, parents: Vec<NodeId>, is_leaf: bool) {
+        // Handle root node special case
+        let (node_id, mut parents) = match self.handle_root_overflow(node_id, parents) {
+            Some(result) => result,
+            None => return, // Root is not overflowing, nothing to do
+        };
+
+        // Find siblings to participate in balancing
+        let parent_id = parents.last().cloned().expect("There should be a parent");
+        let (siblings, last_separator_key) = self.extract_siblings_for_balancing(node_id, parent_id);
+
+        // Extract cells from all siblings
+        let (mut cells, mut sibling_ids) = self.extract_cells_from_siblings(&siblings, is_leaf);
+
+        // Calculate how many nodes we need and create any additional ones
+        let cells_per_node = if is_leaf { self.order - 1 } else { self.order };
+        let num_nodes_needed = cells.len().div_ceil(cells_per_node);
+
+        // TODO: Remove excess nodes if we have more than needed
+
+        self.ensure_sufficient_siblings(&mut sibling_ids, num_nodes_needed, is_leaf);
+
+        // Distribute cells across nodes and reinsert into parent
+        let balanced_distribution = Self::calculate_balanced_cells_distribution(cells.len(), num_nodes_needed);
+        self.distribute_cells_and_reinsert(
+            &mut cells,
+            &sibling_ids,
+            &balanced_distribution,
+            parent_id,
+            last_separator_key,
+            is_leaf,
+        );
+
+        // Recursively balance the parent (always as internal node)
+        if let Some(parent_node_id) = parents.pop() {
+            self.balance(parent_node_id, parents, false);
+        }
+    }
+
+    /// Handles the special case when the root node is overflowing.
+    ///
+    /// If the node is the root and is overflowing, creates a new root and moves the original
+    /// root to be its child.
+    ///
+    /// # Returns
+    /// * `Some((node_id, parents))` - The updated node_id and parents to continue balancing
+    /// * `None` - If the root is not overflowing (nothing to balance)
+    fn handle_root_overflow(&mut self, node_id: NodeId, mut parents: Vec<NodeId>) -> Option<(NodeId, Vec<NodeId>)> {
         let is_root = parents.is_empty();
 
-        // Special case for the root node
         if is_root {
             let is_overflowing = self.get_node(node_id).is_overflowing(self.order);
             if is_overflowing {
-                let new_id = self.grow_new_root(node_id); // TODO : Could we need to balance a root we just grew?
-
+                let new_id = self.grow_new_root(node_id);
                 parents.push(node_id);
-                node_id = new_id;
+                Some((new_id, parents))
             } else {
-                return; // TODO : Could we need to balance a root that is not overflowing? What if it is underflowing? Is this even possible?
+                None // Root is not overflowing, nothing to do
             }
+        } else {
+            Some((node_id, parents))
         }
+    }
 
-        // Find the index of the current node in it's parent
-        let parent_id = parents.last().cloned().expect("There should be a parent");
+    /// Extracts sibling nodes that will participate in balancing.
+    ///
+    /// # Returns
+    /// A tuple containing:
+    /// * The siblings removed from the parent (as cells with optional keys and node IDs)
+    /// * The last separator key (used when reinserting the last sibling)
+    fn extract_siblings_for_balancing(
+        &mut self,
+        node_id: NodeId,
+        parent_id: NodeId,
+    ) -> (Vec<Cell<Option<K>, NodeId>>, Option<K>) {
         let parent = self.get_node_mut(parent_id).as_internal_mut_unchecked();
         let index_in_parent =
             parent.children().position(|id| id == node_id).expect("Node should be a child of its parent");
 
-        // Find the index of the sibling nodes that will participate in the balancing
         let (start_sibling_index, end_sibling_index) = Self::get_index_siblings_balance(index_in_parent, parent.len());
 
-        // Removes the nodes participating in the balancing from the parent
         let siblings: Vec<_> = parent.drain(start_sibling_index..=end_sibling_index).collect();
-
-        // Removes the cells from the nodes to balance
-        let mut cells: VecDeque<Cell<K, V>> = VecDeque::new();
-        for sibling in &siblings {
-            let node = self.get_node_mut(sibling.value).as_leaf_mut().expect("Node should be a leaf"); // TODO : Generalize for internal nodes
-            cells.extend(node.drain(..));
-        }
-
         let last_separator_key = siblings.last().expect("There should be at least one sibling to balance").key.clone();
 
-        let mut sibling_ids: Vec<NodeId> = siblings.iter().map(|cell| cell.value).collect();
+        (siblings, last_separator_key)
+    }
 
-        // Calculate the number of nodes needed after balancing
-        let cells_per_node = self.order - 1; // TODO : would be self.order for internal nodes
-        let num_nodes_needed = cells.len().div_ceil(cells_per_node);
+    /// Extracts all cells from the sibling nodes.
+    ///
+    /// For leaf nodes, cells are `Cell<K, V>`.
+    /// For internal nodes, cells are converted to `Cell<Option<K>, NodeId>` with separator keys
+    /// merged in.
+    ///
+    /// # Returns
+    /// A tuple containing:
+    /// * A deque of cells (using Option<K> to handle both leaf and internal uniformly)
+    /// * The list of sibling node IDs
+    fn extract_cells_from_siblings(
+        &mut self,
+        siblings: &[Cell<Option<K>, NodeId>],
+        is_leaf: bool,
+    ) -> (VecDeque<BalanceCell<K, V>>, Vec<NodeId>) {
+        let mut cells: VecDeque<BalanceCell<K, V>> = VecDeque::new();
 
-        // TODO : Remove excess nodes if we have more than needed
-
-        // Add new nodes if we needs more
-        sibling_ids.resize_with(num_nodes_needed, || {
-            self.register_new_node(Node::Leaf(LeafNode::<K, V>::default())) // TODO : Generalize for internal nodes
-        });
-
-        // Calculate the balanced distribution of cells across the nodes
-        let balanced_distribution = BTree::<K, V>::calculate_balanced_cells_distribution(cells.len(), num_nodes_needed);
-
-        // Distribute the cells to the nodes according to the balanced distribution and insert them back to the parent
-        for (index, (&sibling_id, &distribution_count)) in
-            sibling_ids.iter().zip(balanced_distribution.iter()).enumerate()
-        {
-            // Distribute the cells to the sibling node
-            let node = self.get_node_mut(sibling_id).as_leaf_mut().expect("Node should be a leaf"); // TODO : Generalize for internal nodes
-            for cell in cells.drain(0..distribution_count) {
-                node.insert(cell).expect("Insertion should succeed, key uniqueness is guaranteed");
-            }
-
-            // Insert the sibling back to the parent
-            let parent = self.get_node_mut(parent_id).as_internal_mut_unchecked();
-            if index < sibling_ids.len() - 1 {
-                parent
-                    .insert(Cell {
-                        key: cells.front().expect("There should be cells remaining").key.clone(),
-                        value: sibling_id,
-                    })
-                    .expect("Insertion into parent should succeed");
+        for sibling in siblings {
+            if is_leaf {
+                let node = self.get_node_mut(sibling.value).as_leaf_mut().expect("Node should be a leaf");
+                for cell in node.drain(..) {
+                    cells.push_back(BalanceCell::Leaf(cell));
+                }
             } else {
-                match last_separator_key.clone() {
-                    Some(key) => {
-                        parent.insert(Cell { key, value: sibling_id }).expect("Insertion into parent should succeed")
-                    }
-                    None => parent.set_right_most_child(sibling_id),
+                let node = self.get_node_mut(sibling.value).as_internal_mut().expect("Node should be internal");
+                for item in node.drain(..) {
+                    let key = match item.key {
+                        Some(key) => Some(key),
+                        None => sibling.key.clone(),
+                    };
+                    cells.push_back(BalanceCell::Internal(Cell::new(key, item.value)));
                 }
             }
         }
 
-        if let Some(parent_node_id) = parents.pop() {
-            self.balance_internal(parent_node_id, parents);
+        let sibling_ids: Vec<NodeId> = siblings.iter().map(|cell| cell.value).collect();
+        (cells, sibling_ids)
+    }
+
+    /// Ensures we have enough sibling nodes for the balanced distribution.
+    ///
+    /// Creates new nodes if needed.
+    fn ensure_sufficient_siblings(&mut self, sibling_ids: &mut Vec<NodeId>, num_nodes_needed: usize, is_leaf: bool) {
+        sibling_ids.resize_with(num_nodes_needed, || {
+            if is_leaf {
+                self.register_new_node(Node::Leaf(LeafNode::<K, V>::default()))
+            } else {
+                self.register_new_node(Node::Internal(InternalNode::<K>::default()))
+            }
+        });
+    }
+
+    /// Distributes cells across sibling nodes and reinserts them into the parent.
+    fn distribute_cells_and_reinsert(
+        &mut self,
+        cells: &mut VecDeque<BalanceCell<K, V>>,
+        sibling_ids: &[NodeId],
+        distribution: &[usize],
+        parent_id: NodeId,
+        last_separator_key: Option<K>,
+        is_leaf: bool,
+    ) {
+        for (index, (&sibling_id, &distribution_count)) in sibling_ids.iter().zip(distribution.iter()).enumerate() {
+            let separator_key = if is_leaf {
+                self.distribute_to_leaf(cells, sibling_id, distribution_count)
+            } else {
+                self.distribute_to_internal(cells, sibling_id, distribution_count)
+            };
+
+            self.reinsert_sibling_to_parent(
+                sibling_id,
+                separator_key,
+                parent_id,
+                index,
+                sibling_ids.len(),
+                &last_separator_key,
+            );
         }
+    }
+
+    /// Distributes cells to a leaf node.
+    ///
+    /// # Returns
+    /// The key to use as separator in the parent (the first key of the next node).
+    fn distribute_to_leaf(
+        &mut self,
+        cells: &mut VecDeque<BalanceCell<K, V>>,
+        sibling_id: NodeId,
+        count: usize,
+    ) -> Option<K> {
+        let node = self.get_node_mut(sibling_id).as_leaf_mut().expect("Node should be a leaf");
+
+        for balance_cell in cells.drain(0..count) {
+            let cell = balance_cell.into_leaf_cell().expect("Expected leaf cell");
+            node.insert(cell).expect("Insertion should succeed, key uniqueness is guaranteed");
+        }
+
+        // Return the first key of the remaining cells as the separator
+        cells.front().map(|c| c.key().cloned().expect("Leaf cells should always have keys"))
+    }
+
+    /// Distributes cells to an internal node.
+    ///
+    /// # Returns
+    /// The key extracted from the last cell (used as separator in parent).
+    fn distribute_to_internal(
+        &mut self,
+        cells: &mut VecDeque<BalanceCell<K, V>>,
+        sibling_id: NodeId,
+        count: usize,
+    ) -> Option<K> {
+        let node = self.get_node_mut(sibling_id).as_internal_mut().expect("Node should be internal");
+
+        // Insert all but the last cell (the last becomes the rightmost child)
+        for balance_cell in cells.drain(0..count - 1) {
+            let cell = balance_cell.into_internal_cell().expect("Expected internal cell");
+            node.insert(Cell::new(cell.key.expect("Cells that are not the last should have a key"), cell.value))
+                .expect("Insertion should succeed, key uniqueness is guaranteed");
+        }
+
+        // The last cell becomes the rightmost child
+        let last_cell = cells
+            .pop_front()
+            .expect("There should be cells remaining")
+            .into_internal_cell()
+            .expect("Expected internal cell");
+        node.set_right_most_child(last_cell.value);
+
+        last_cell.key
+    }
+
+    /// Reinserts a sibling node into the parent after redistribution.
+    fn reinsert_sibling_to_parent(
+        &mut self,
+        sibling_id: NodeId,
+        separator_key: Option<K>,
+        parent_id: NodeId,
+        index: usize,
+        total_siblings: usize,
+        last_separator_key: &Option<K>,
+    ) {
+        let parent = self.get_node_mut(parent_id).as_internal_mut_unchecked();
+
+        if index < total_siblings - 1 {
+            // Not the last sibling - use the separator key
+            parent
+                .insert(Cell {
+                    key: separator_key.expect("Separator key should exist for non-last siblings"),
+                    value: sibling_id,
+                })
+                .expect("Insertion into parent should succeed");
+        } else {
+            // Last sibling - use the original last separator key
+            match last_separator_key.clone() {
+                Some(key) => {
+                    parent.insert(Cell { key, value: sibling_id }).expect("Insertion into parent should succeed");
+                }
+                None => parent.set_right_most_child(sibling_id),
+            }
+        }
+    }
+
+    /// Balance a leaf node, propagating up to the root if needed.
+    fn balance_leaf(&mut self, node_id: NodeId, parents: Vec<NodeId>) {
+        self.balance(node_id, parents, true);
+    }
+
+    /// Balance an internal node, propagating up to the root if needed.
+    fn balance_internal(&mut self, node_id: NodeId, parents: Vec<NodeId>) {
+        self.balance(node_id, parents, false);
     }
 
     /// Creates a new root node and makes the existing root its child.
