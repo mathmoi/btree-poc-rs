@@ -77,7 +77,7 @@ impl<K, V> LeafNode<K, V> {
     ///
     /// # Panics
     /// * Panics if the range is invalid (start > end or end > len)
-    pub fn drain<R: RangeBounds<usize>>(&mut self, range: R) -> SlotDirectoryDrain<K, V> {
+    pub fn drain<R: RangeBounds<usize>>(&mut self, range: R) -> SlotDirectoryDrain<'_, K, V> {
         let range = crate::utils::normalize_range(range, self.slot_directory.len());
         assert!(range.start <= range.end && range.end <= self.slot_directory.len()); // TODO : Should we return a Result instead?
 
@@ -281,7 +281,7 @@ impl<K: Clone> InternalNode<K> {
     ///
     /// # Notes
     /// The node is in an invalid state after calling this method until all drained items have been consumed.
-    pub fn drain<R: RangeBounds<usize>>(&mut self, range: R) -> InternalNodeDrain<K> {
+    pub fn drain<R: RangeBounds<usize>>(&mut self, range: R) -> InternalNodeDrain<'_,K> {
         let range = crate::utils::normalize_range(range, self.len());
         assert!(range.start <= range.end && range.end <= self.len()); // TODO : Should we return a Result instead?
 

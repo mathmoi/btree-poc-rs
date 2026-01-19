@@ -259,6 +259,104 @@ impl<K: Debug + Clone + Ord, V: Debug + Clone> BTree<K, V> {
             .collect()
     }
 
+    fn balance_internal(&mut self, node_id: NodeId, mut parents: Vec<NodeId>) {
+        let is_root = parents.is_empty();
+
+        // Special case for the root node
+        let mut node_id = node_id;
+        if is_root {
+            let is_overflowing = self.get_node(node_id).is_overflowing(self.order);
+            if is_overflowing {
+                let new_id = self.grow_new_root(node_id); // TODO : Could we need to balance a root we just grew?
+
+                parents.push(node_id);
+                node_id = new_id;
+            } else {
+                return; // TODO : Could we need to balance a root that is not overflowing? What if it is underflowing? Is this even possible?
+            }
+        }
+
+        // Find the index of the current node in it's parent
+        let parent_id = parents.last().cloned().expect("There should be a parent");
+        let parent = self.get_node_mut(parent_id).as_internal_mut_unchecked();
+        let index_in_parent =
+            parent.children().position(|id| id == node_id).expect("Node should be a child of its parent");
+
+        // Find the index of the sibling nodes that will participate in the balancing
+        let (start_sibling_index, end_sibling_index) = Self::get_index_siblings_balance(index_in_parent, parent.len());
+
+        // Removes the nodes participating in the balancing from the parent
+        let siblings: Vec<_> = parent.drain(start_sibling_index..=end_sibling_index).collect();
+
+        // Removes the cells from the nodes to balance
+        let mut cells: VecDeque<Cell<Option<K>, NodeId>> = VecDeque::new();
+        for sibling in &siblings {
+            let node = self.get_node_mut(sibling.value).as_internal_mut().expect("Node should be internal");
+            let mut iter = node.drain(..);
+            cells.extend(std::iter::from_fn(|| {
+                let item = iter.next()?;
+                let key = match item.key {
+                    Some(key) => Some(key),
+                    None => sibling.key.clone(),
+                };
+                Some(Cell::new(key, item.value))
+            }));
+        }
+
+        let last_separator_key = siblings.last().expect("There should be at least one sibling to balance").key.clone();
+
+        let mut sibling_ids: Vec<NodeId> = siblings.iter().map(|cell| cell.value).collect();
+
+        // Calculate the number of nodes needed after balancing
+        let cells_per_node = self.order;
+        let num_nodes_needed = cells.len().div_ceil(cells_per_node);
+
+        // TODO : Remove excess nodes if we have more than needed
+
+        // Add new nodes if we needs more
+        sibling_ids
+            .resize_with(num_nodes_needed, || self.register_new_node(Node::Internal(InternalNode::<K>::default())));
+
+        // Calculate the balanced distribution of cells across the nodes
+        let balanced_distribution = BTree::<K, V>::calculate_balanced_cells_distribution(cells.len(), num_nodes_needed);
+
+        // Distribute the cells to the nodes according to the balanced distribution and insert them back to the parent
+        for (index, (&sibling_id, &distribution_count)) in
+            sibling_ids.iter().zip(balanced_distribution.iter()).enumerate()
+        {
+            // Distribute the cells to the sibling node
+            let node = self.get_node_mut(sibling_id).as_internal_mut().expect("Node should be internal");
+            for cell in cells.drain(0..distribution_count - 1) {
+                node.insert(Cell::new(cell.key.expect("Cells that are not the last should have a key"), cell.value))
+                    .expect("Insertion should succeed, key uniqueness is guaranteed");
+            }
+            let last_cells = cells.pop_front().expect("There is always items remaining in cells at this point");
+            node.set_right_most_child(last_cells.value);
+
+            // Insert the sibling back to the parent
+            let parent = self.get_node_mut(parent_id).as_internal_mut_unchecked();
+            if index < sibling_ids.len() - 1 {
+                parent
+                    .insert(Cell {
+                        key: last_cells.key.expect("Only the last cell does not have a value"),
+                        value: sibling_id,
+                    })
+                    .expect("Insertion into parent should succeed");
+            } else {
+                match last_separator_key.clone() {
+                    Some(key) => {
+                        parent.insert(Cell { key, value: sibling_id }).expect("Insertion into parent should succeed")
+                    }
+                    None => parent.set_right_most_child(sibling_id),
+                }
+            }
+        }
+
+        if let Some(parent_node_id) = parents.pop() {
+            self.balance_internal(parent_node_id, parents);
+        }
+    }
+
     /// Balance the tree starting from the nodes in the provided stack.
     ///
     /// This is an internal helper method that performs the actual balancing logic after insertions or deletions.
@@ -289,7 +387,7 @@ impl<K: Debug + Clone + Ord, V: Debug + Clone> BTree<K, V> {
                 parents.push(node_id);
                 node_id = new_id;
             } else {
-                return;
+                return; // TODO : Could we need to balance a root that is not overflowing? What if it is underflowing? Is this even possible?
             }
         }
 
@@ -357,6 +455,10 @@ impl<K: Debug + Clone + Ord, V: Debug + Clone> BTree<K, V> {
                     None => parent.set_right_most_child(sibling_id),
                 }
             }
+        }
+
+        if let Some(parent_node_id) = parents.pop() {
+            self.balance_internal(parent_node_id, parents);
         }
     }
 
@@ -874,30 +976,30 @@ mod tests {
     /// When a leaf node overflows but as sibling node with space available, the overflowing node should send a cell to the sibling
     /// to balance the tree without needing to split nodes.
     ///
-    /// ```text                                                                                                                 
-    ///                 Insert 35                                                                                   
-    ///                     |                                                                                       
-    ///                     |                                                                                       
-    ///               +-----v-----+                                                                                 
-    ///       +------ | 30  | 50  |-------+                                                                         
-    ///       |       +-----+-----+       |                                                                         
-    ///       |             |             |                                                                         
-    ///       |             |             |                                                                         
+    /// ```text
+    ///                 Insert 35
+    ///                     |
+    ///                     |
+    ///               +-----v-----+
+    ///       +------ | 30  | 50  |-------+
+    ///       |       +-----+-----+       |
+    ///       |             |             |
+    ///       |             |             |
     /// +-----v-----+ +-----v-----+ +-----v-----+                                                                  -
-    /// | 10  | 20  | | 30  | 40  | | 50  |     |                                                                   
-    /// +-----+-----+ +-----+-----+ +-----+-----+                                                                   
-    ///                                                                                                             
-    ///                   Result                                                                                    
-    ///                     |                                                                                       
-    ///                     |                                                                                       
-    ///               +-----v-----+                                                                                 
-    ///       +------ | 30  | 40  --------+                                                                         
-    ///       |       +-----+-----+       |                                                                         
-    ///       |             |             |                                                                         
-    ///       |             |             |                                                                         
-    /// +-----v-----+ +-----v-----+ +-----v-----+                                                                   
-    /// | 10  | 20  | | 30  | 35  | | 40  | 50  |                                                                   
-    /// +-----+-----+ +-----+-----+ +-----+-----+   
+    /// | 10  | 20  | | 30  | 40  | | 50  |     |
+    /// +-----+-----+ +-----+-----+ +-----+-----+
+    ///
+    ///                   Result
+    ///                     |
+    ///                     |
+    ///               +-----v-----+
+    ///       +------ | 30  | 40  --------+
+    ///       |       +-----+-----+       |
+    ///       |             |             |
+    ///       |             |             |
+    /// +-----v-----+ +-----v-----+ +-----v-----+
+    /// | 10  | 20  | | 30  | 35  | | 40  | 50  |
+    /// +-----+-----+ +-----+-----+ +-----+-----+
     /// ```
     #[test]
     fn when_leaf_node_overflows_can_send_cell_to_sibling() -> Result<(), Box<dyn Error>> {
@@ -946,36 +1048,36 @@ mod tests {
     /// When an overflowing node is the first child of its parent, the first three nodes are used for balancing.
     ///
     /// ```text
-    ///                                     Insert 25                                                               
-    ///                                         |                                                                   
-    ///                                         |                                                                   
-    ///                                +-----+--v--+-----+                                                          
-    ///           +---------------------  40 | 70  | 80  ---------------------+                                     
-    ///           |                    +-----/-----\-----+                    |                                     
-    ///           |                         /       \                         |                                     
-    ///           |                        /         \                        |                                     
-    ///           |                       /           \                       |                                     
-    ///           |                      /             \                      |                                     
-    ///           |                     /               \                     |                                     
-    ///           |                    /                 \                    |                                     
-    ///  +-----+--v--+-----+ +-----+--v--+-----+ +-----+--v--+-----+ +-----+--v--+-----+                            
-    ///  | 10  | 20  | 30  | | 40  | 50  | 60  | | 70  |     |     | | 80  |     |     |                            
-    ///  +-----+-----+-----+ +-----+-----+-----+ +-----+-----+-----+ +-----+-----+-----+                            
-    ///                                                                                                             
-    ///                                       Result                                                                
-    ///                                         |                                                                   
-    ///                                         |                                                                   
-    ///                                +-----+--v--+-----+                                                          
-    ///           +---------------------  30 | 60  | 80  ---------------------+                                     
-    ///           |                    +-----/-----\-----+                    |                                     
-    ///           |                         /       \                         |                                     
-    ///           |                        /         \                        |                                     
-    ///           |                       /           \                       |                                     
-    ///           |                      /             \                      |                                     
-    ///           |                     /               \                     |                                     
-    ///           |                    /                 \                    |                                     
-    ///  +-----+--v--+-----+ +-----+--v--+-----+ +-----+--v--+-----+ +-----+--v--+-----+                            
-    ///  | 10  | 20  | 25  | | 30  | 40  | 50  | | 60  | 70  |     | | 80  |     |     |                            
+    ///                                     Insert 25
+    ///                                         |
+    ///                                         |
+    ///                                +-----+--v--+-----+
+    ///           +---------------------  40 | 70  | 80  ---------------------+
+    ///           |                    +-----/-----\-----+                    |
+    ///           |                         /       \                         |
+    ///           |                        /         \                        |
+    ///           |                       /           \                       |
+    ///           |                      /             \                      |
+    ///           |                     /               \                     |
+    ///           |                    /                 \                    |
+    ///  +-----+--v--+-----+ +-----+--v--+-----+ +-----+--v--+-----+ +-----+--v--+-----+
+    ///  | 10  | 20  | 30  | | 40  | 50  | 60  | | 70  |     |     | | 80  |     |     |
+    ///  +-----+-----+-----+ +-----+-----+-----+ +-----+-----+-----+ +-----+-----+-----+
+    ///
+    ///                                       Result
+    ///                                         |
+    ///                                         |
+    ///                                +-----+--v--+-----+
+    ///           +---------------------  30 | 60  | 80  ---------------------+
+    ///           |                    +-----/-----\-----+                    |
+    ///           |                         /       \                         |
+    ///           |                        /         \                        |
+    ///           |                       /           \                       |
+    ///           |                      /             \                      |
+    ///           |                     /               \                     |
+    ///           |                    /                 \                    |
+    ///  +-----+--v--+-----+ +-----+--v--+-----+ +-----+--v--+-----+ +-----+--v--+-----+
+    ///  | 10  | 20  | 25  | | 30  | 40  | 50  | | 60  | 70  |     | | 80  |     |     |
     ///  +-----+-----+-----+ +-----+-----+-----+ +-----+-----+-----+ +-----+-----+-----+
     /// ```
     #[test]
@@ -1039,30 +1141,30 @@ mod tests {
     /// to the parent.
     ///
     /// ```text
-    ///                          Insert 70                                                                           
-    ///                             |                                                                               
-    ///                             v                                                                               
-    ///                    +-----+-----+-----+                                                                      
-    ///                 +--| 40  |     |     |--+                                                                   
-    ///                 |  +-----+-----+-----+  |                                                                   
-    ///                 |                       |                                                                   
-    ///                 |                       |                                                                   
-    ///                 |                       |                                                                   
-    ///        +-----+--v--+-----+     +-----+--v--+-----+                                                          
-    ///        | 10  | 20  | 30  |     | 40  | 50  | 60  |                                                          
-    ///        +-----+-----+-----+     +-----+-----+-----+                                                          
-    ///                                                                                                             
-    ///                           Result                                                                            
-    ///                             |                                                                               
-    ///                             v                                                                               
-    ///                    +-----+-----+-----+                                                                      
-    ///          +---------| 40  | 60  |     |-----------+                                                          
-    ///          |         +-----+--|--+-----+           |                                                          
-    ///          |                  |                    |                                                          
-    ///          |                  |                    |                                                          
-    /// +-----+--v--+-----+ +-----+-v---+-----+ +-----+--v--+-----+                                                 
-    /// | 10  | 20  | 30  | | 40  | 50  |     | | 60  | 70  |     |                                                 
-    /// +-----+-----+-----+ +-----+-----+-----+ +-----+-----+-----+  
+    ///                          Insert 70
+    ///                             |
+    ///                             v
+    ///                    +-----+-----+-----+
+    ///                 +--| 40  |     |     |--+
+    ///                 |  +-----+-----+-----+  |
+    ///                 |                       |
+    ///                 |                       |
+    ///                 |                       |
+    ///        +-----+--v--+-----+     +-----+--v--+-----+
+    ///        | 10  | 20  | 30  |     | 40  | 50  | 60  |
+    ///        +-----+-----+-----+     +-----+-----+-----+
+    ///
+    ///                           Result
+    ///                             |
+    ///                             v
+    ///                    +-----+-----+-----+
+    ///          +---------| 40  | 60  |     |-----------+
+    ///          |         +-----+--|--+-----+           |
+    ///          |                  |                    |
+    ///          |                  |                    |
+    /// +-----+--v--+-----+ +-----+-v---+-----+ +-----+--v--+-----+
+    /// | 10  | 20  | 30  | | 40  | 50  |     | | 60  | 70  |     |
+    /// +-----+-----+-----+ +-----+-----+-----+ +-----+-----+-----+
     /// ```
     #[test]
     fn leaf_node_overflowing_needs_to_split() -> Result<(), Box<dyn Error>> {
@@ -1114,33 +1216,33 @@ mod tests {
     /// a key to its parent.
     ///
     /// ```text
-    ///                          Insert 35                                                                          
-    ///                              |                                                                              
-    ///                              v                                                                              
-    ///                        +-----+-----+                                                                        
-    ///                +-------- 30  | 50  --------+                                                                
-    ///                |       +-----|-----+       |                                                                
-    ///                |             |             |                                                                
-    ///                |             |             |                                                                
-    ///          +-----v-----+ +-----v-----+ +-----v-----+                                                          
-    ///          | 10  | 20  | | 30  | 40  | | 50  | 60  |                                                          
-    ///          +-----+-----+ +-----+-----+ +-----+-----+                                                          
-    ///                                                                                                             
-    ///                            Result                                                                           
-    ///                              |                                                                              
-    ///                              v                                                                              
-    ///                        +-----+-----+                                                                        
-    ///               +--------- 40  |     -----------+                                                             
-    ///               |        +-----+-----+          |                                                             
-    ///               |                               |                                                             
-    ///         +-----v-----+                   +-----v-----+                                                       
-    ///       +-- 30  |     --+               +-- 60  |     --+                                                     
-    ///       | +-----+-----+ |               | +-----+-----+ |                                                     
-    ///       |               |               |               |                                                     
-    /// +-----v-----+   +-----v-----+   +-----v-----+   +-----v-----+                                               
-    /// | 10  | 20  |   | 30  | 35  |   | 40  | 50  |   | 60  |     |                                               
-    /// +-----+-----+   +-----+-----+   +-----+-----+   +-----+-----+    
-    /// ```  
+    ///                          Insert 35
+    ///                              |
+    ///                              v
+    ///                        +-----+-----+
+    ///                +-------- 30  | 50  --------+
+    ///                |       +-----|-----+       |
+    ///                |             |             |
+    ///                |             |             |
+    ///          +-----v-----+ +-----v-----+ +-----v-----+
+    ///          | 10  | 20  | | 30  | 40  | | 50  | 60  |
+    ///          +-----+-----+ +-----+-----+ +-----+-----+
+    ///
+    ///                            Result
+    ///                              |
+    ///                              v
+    ///                        +-----+-----+
+    ///               +--------- 40  |     -----------+
+    ///               |        +-----+-----+          |
+    ///               |                               |
+    ///         +-----v-----+                   +-----v-----+
+    ///       +-- 30  |     --+               +-- 60  |     --+
+    ///       | +-----+-----+ |               | +-----+-----+ |
+    ///       |               |               |               |
+    /// +-----v-----+   +-----v-----+   +-----v-----+   +-----v-----+
+    /// | 10  | 20  |   | 30  | 35  |   | 40  | 50  |   | 60  |     |
+    /// +-----+-----+   +-----+-----+   +-----+-----+   +-----+-----+
+    /// ```
     #[test]
     fn leaf_node_split_causes_parent_to_overflow_and_split() -> Result<(), Box<dyn Error>> {
         #[rustfmt::skip]
@@ -1171,7 +1273,7 @@ mod tests {
                         .add_key_value_pair(10, 10)?
                         .add_key_value_pair(20, 20)?
                     .end_node()?
-                    .add_leaf_node(None)? 
+                    .add_leaf_node(None)?
                         .add_key_value_pair(30, 30)?
                         .add_key_value_pair(35, 35)?
                     .end_node()?
