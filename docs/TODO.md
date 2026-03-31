@@ -44,10 +44,10 @@
 
 ### Insert — Internal Node Split (no redistribution possible)
 
-- [] A leaf split that overflows a full internal node whose siblings are also full triggers an internal node split
-- [] After an internal node split, the promoted key is pushed to the parent correctly
-- [] After an internal node split, child pointers are distributed correctly between the two internal nodes
-- [] Cascading splits propagate up to the root, increasing tree height by one
+- [ ] A leaf split that overflows a full internal node whose siblings are also full triggers an internal node split
+- [ ] After an internal node split, the promoted key is pushed to the parent correctly
+- [ ] After an internal node split, child pointers are distributed correctly between the two internal nodes
+- [ ] Cascading splits propagate up to the root, increasing tree height by one
 
 
 ### Insert — Internal Node Redistribution
