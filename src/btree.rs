@@ -223,6 +223,13 @@ impl<K, V> BTree<K, V> {
 }
 
 impl<K: Debug + Clone + Ord, V: Debug + Clone> BTree<K, V> {
+    // TODO : Document this method
+    // TODO : Implement this method
+    /*pub fn get(&self, key: K) -> Option<&V> {
+        let root = self.get_node(1);
+        root.as_leaf().expect("For now the node must be a leaf node").
+    }*/
+
     /// Inserts a key-value pair into the B+Tree.
     ///
     /// The insertion maintains the B+Tree properties by recursively traversing to the appropriate leaf node and
@@ -984,6 +991,42 @@ impl<K: Clone + Ord, V: Clone> BTreeBuilder<K, V> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    fn new_empty_btree() -> BTree<u32, u32> {
+        BTreeBuilder::<u32, u32>::default().build()
+    }
+
+    fn new_single_node_btree() -> BTree<u32, u32> {
+        #[rustfmt::skip]
+        let btree = BTreeBuilder::<u32, u32>::default()
+            .add_leaf_node(None).unwrap()
+                .add_key_value_pair(1, 2).unwrap()
+                .add_key_value_pair(2, 4).unwrap()
+            .end_node().unwrap()
+            .build();
+        btree
+    }
+
+    #[test]
+    fn reading_from_empty_btree_returns_none() {
+        let btree = new_empty_btree();
+        let result = btree.get(1);
+        assert_eq!(None, result);
+    }
+
+    // TODO : Make this test pass
+    /*#[test]
+    fn reading_existing_key_in_single_node_tree_return_correct_value() {
+        let btree = new_single_node_btree();
+        let result = btree.get(1);
+        assert!(matches!(result, Some(2)));
+    }*/
+}
+
+// TODO : Eventually we need to remove theses tests when the new ones have replaced them.
+#[cfg(test)]
+mod tests_legacy {
     use super::*;
     use std::error::Error;
 
