@@ -108,7 +108,14 @@ where
         Ok(())
     }
 
-    // TODO : Document this method
+    /// Returns a reference to the value associated with the given key in this leaf node.
+    ///
+    /// # Arguments
+    /// * `key` - The key to search for
+    ///
+    /// # Returns
+    /// * `Some(&V)` - A reference to the value associated with the key
+    /// * `None` - If the key is not present in this leaf node
     pub fn get(&self, key: &K) -> Option<&V> {
         self.slot_directory.get(key)
     }

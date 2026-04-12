@@ -219,7 +219,16 @@ impl<K: Ord, V> SlotDirectory<K, V> {
         }
     }
 
-    // TODO : Document this method
+    /// Returns a reference to the value associated with the given key.
+    ///
+    /// Uses binary search to locate the key. Returns `None` if the key is not present.
+    ///
+    /// # Arguments
+    /// * `key` - The key to search for
+    ///
+    /// # Returns
+    /// * `Some(&V)` - A reference to the value associated with the key
+    /// * `None` - If the key is not present in this slot directory
     pub fn get(&self, key: &K) -> Option<&V> {
         self.find_index(key).ok().map(|index| &self.cells[index].value)
     }

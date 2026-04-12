@@ -222,8 +222,17 @@ impl<K: Clone + Ord + Debug + PartialEq, V: Clone + Debug + PartialEq> BTree<K, 
     // TODO : Implement search
     // TODO : Implement deletion
 
-    // TODO : Document this method
-    // TODO : Implement this method
+    /// Looks up a key in the B+Tree and returns a reference to its associated value.
+    ///
+    /// Traverses the tree from the root to the appropriate leaf node and returns a reference to the value associated
+    /// with the given key, or `None` if the key is not present.
+    ///
+    /// # Arguments
+    /// * `key` - The key to search for
+    ///
+    /// # Returns
+    /// * `Some(&V)` - A reference to the value associated with the key
+    /// * `None` - If the key does not exist in the tree
     pub fn get(&self, key: &K) -> Option<&V> {
         let leaf_node_id = self.find_leaf_id(self.root_node_id, self.depth, key);
         let leaf_node = self.get_node(leaf_node_id).as_leaf().expect("The node requested should be a leaf node");
@@ -1050,7 +1059,6 @@ mod tests {
         assert_eq!(None, result);
     }
 
-    // TODO : Make this test pass
     #[test]
     fn reading_existing_key_in_single_node_tree_return_correct_value() {
         let btree = new_single_node_btree();
@@ -1188,7 +1196,7 @@ mod tests_legacy {
     ///       |       +-----+-----+       |
     ///       |             |             |
     ///       |             |             |
-    /// +-----v-----+ +-----v-----+ +-----v-----+                                                                  -
+    /// +-----v-----+ +-----v-----+ +-----v-----+
     /// | 10  | 20  | | 30  | 40  | | 50  |     |
     /// +-----+-----+ +-----+-----+ +-----+-----+
     ///
