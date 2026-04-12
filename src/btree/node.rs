@@ -61,7 +61,11 @@ pub struct LeafNode<K, V> {
     next_leaf: Option<u32>,
 }
 
-impl<K, V> LeafNode<K, V> {
+impl<K, V> LeafNode<K, V>
+where
+    K: Ord + Clone,
+    V: Clone,
+{
     /// Clears all cells from the leaf node.
     pub fn clear(&mut self) {
         self.slot_directory.clear();
@@ -79,13 +83,14 @@ impl<K, V> LeafNode<K, V> {
     /// * Panics if the range is invalid (start > end or end > len)
     pub fn drain<R: RangeBounds<usize>>(&mut self, range: R) -> SlotDirectoryDrain<'_, K, V> {
         let range = crate::utils::normalize_range(range, self.slot_directory.len());
-        assert!(range.start <= range.end && range.end <= self.slot_directory.len()); // TODO : Should we return a Result instead?
+        assert!(
+            range.start <= range.end && range.end <= self.slot_directory.len(),
+            "drain called with an invalid range for the LeafNode"
+        );
 
         self.slot_directory.drain(range)
     }
-}
 
-impl<K: Ord + Clone, V: Clone> LeafNode<K, V> {
     /// Inserts a cell into the leaf node.
     ///
     /// The cell is inserted in sorted order by key. If the key already exists, the insertion fails.
@@ -101,6 +106,11 @@ impl<K: Ord + Clone, V: Clone> LeafNode<K, V> {
     pub fn insert(&mut self, cell: Cell<K, V>) -> Result<(), NodeError> {
         self.slot_directory.insert(cell)?;
         Ok(())
+    }
+
+    // TODO : Document this method
+    pub fn get(&self, key: &K) -> Option<&V> {
+        self.slot_directory.get(key)
     }
 
     /// Returns an iterator over all key-value pairs in this leaf node.
@@ -163,7 +173,7 @@ impl<K> InternalNode<K> {
     }
 }
 
-impl<K: Clone + Ord> InternalNode<K> {
+impl<K: Ord + Clone> InternalNode<K> {
     /// Returns an iterator over all keys in this internal node.
     ///
     /// # Returns
@@ -243,7 +253,7 @@ impl<K: Clone + Ord> InternalNode<K> {
 
 impl<K: Clone> InternalNode<K> {
     /// Returns the child node ID at the specified index.
-    ///     
+    ///
     /// # Arguments
     /// * `index` - The index of the child node to retrieve
     ///
@@ -281,9 +291,12 @@ impl<K: Clone> InternalNode<K> {
     ///
     /// # Notes
     /// The node is in an invalid state after calling this method until all drained items have been consumed.
-    pub fn drain<R: RangeBounds<usize>>(&mut self, range: R) -> InternalNodeDrain<'_,K> {
+    pub fn drain<R: RangeBounds<usize>>(&mut self, range: R) -> InternalNodeDrain<'_, K> {
         let range = crate::utils::normalize_range(range, self.len());
-        assert!(range.start <= range.end && range.end <= self.len()); // TODO : Should we return a Result instead?
+        assert!(
+            range.start <= range.end && range.end <= self.len(),
+            "drain called with an invalid range for the InternalNode"
+        );
 
         // Determine if we need to take the right most child
         let right_most_child = if range.end > self.slot_directory.len() { self.right_most_child.take() } else { None };

@@ -218,6 +218,11 @@ impl<K: Ord, V> SlotDirectory<K, V> {
             }
         }
     }
+
+    // TODO : Document this method
+    pub fn get(&self, key: &K) -> Option<&V> {
+        self.find_index(key).ok().map(|index| &self.cells[index].value)
+    }
 }
 
 impl<K: Clone, V: Clone> SlotDirectory<K, V> {
@@ -232,12 +237,12 @@ impl<K: Clone, V: Clone> SlotDirectory<K, V> {
     /// # Errors
     /// Returns `SlotDirectoryError::IndexOutOfBounds` if the index is greater than or equal to the number of cells in
     /// the directory.
-    pub fn cell_at(&self, index: usize) -> Result<Cell<K, V>, SlotDirectoryError> {
+    pub fn cell_at(&self, index: usize) -> Result<&Cell<K, V>, SlotDirectoryError> {
         if index >= self.len() {
             return Err(SlotDirectoryError::IndexOutOfBounds { index, size: self.len() });
         }
 
-        Ok(self.cells[index].clone())
+        Ok(&self.cells[index])
     }
 }
 

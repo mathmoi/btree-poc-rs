@@ -139,11 +139,12 @@ pub struct BTree<K, V> {
     order: usize,
     root_node_id: NodeId,
     next_node_id: NodeId,
+    depth: usize,
 }
 
 // TODO : leaf nodes should be linked together for range queries
 
-impl<K, V> BTree<K, V> {
+impl<K: Clone + Ord + Debug + PartialEq, V: Clone + Debug + PartialEq> BTree<K, V> {
     /// Creates a new, empty `BTree` with the specified order.
     ///
     /// The order determines the branching factor of the tree, which affects performance characteristics. Higher orders
@@ -165,7 +166,7 @@ impl<K, V> BTree<K, V> {
         }
 
         let root_node = Node::<K, V>::Leaf(LeafNode::<K, V>::default());
-        Ok(BTree::<K, V> { nodes: HashMap::from([(0, root_node)]), order, root_node_id: 0, next_node_id: 1 })
+        Ok(BTree::<K, V> { nodes: HashMap::from([(0, root_node)]), order, root_node_id: 0, next_node_id: 1, depth: 1 })
     }
 
     /// Adds a new node to the tree and returns its assigned ID.
@@ -220,15 +221,28 @@ impl<K, V> BTree<K, V> {
 
     // TODO : Implement search
     // TODO : Implement deletion
-}
 
-impl<K: Debug + Clone + Ord, V: Debug + Clone> BTree<K, V> {
     // TODO : Document this method
     // TODO : Implement this method
-    /*pub fn get(&self, key: K) -> Option<&V> {
-        let root = self.get_node(1);
-        root.as_leaf().expect("For now the node must be a leaf node").
-    }*/
+    pub fn get(&self, key: &K) -> Option<&V> {
+        let leaf_node_id = self.find_leaf_id(self.root_node_id, self.depth, key);
+        let leaf_node = self.get_node(leaf_node_id).as_leaf().expect("The node requested should be a leaf node");
+        leaf_node.get(key)
+    }
+
+    fn find_leaf_id(&self, current_node_id: NodeId, current_depth: usize, key: &K) -> NodeId {
+        // If we are not at the leaf level we need to recurse down the tree.
+        if current_depth > 1 {
+            let node = self
+                .get_node(current_node_id)
+                .as_internal()
+                .expect("The depth is greater than 1, the node should be internal");
+            let child_id = node.find_child_id(key);
+            return self.find_leaf_id(child_id, current_depth - 1, key);
+        }
+
+        current_node_id
+    }
 
     /// Inserts a key-value pair into the B+Tree.
     ///
@@ -614,6 +628,7 @@ impl<K: Debug + Clone + Ord, V: Debug + Clone> BTree<K, V> {
         let mut new_root = InternalNode::<K>::default();
         new_root.set_right_most_child(new_id);
         self.nodes.insert(node_id, Node::Internal(new_root));
+        self.depth += 1;
         new_id
     }
 
@@ -643,9 +658,7 @@ impl<K: Debug + Clone + Ord, V: Debug + Clone> BTree<K, V> {
             (index_in_parent - 1, index_in_parent + 1)
         }
     }
-}
 
-impl<K: Clone + Ord + Debug, V> BTree<K, V> {
     /// Formats a node and its descendants in a tree-like structure.
     ///
     /// This is an internal helper method used by the `Debug` implementation to recursively format the tree structure
@@ -682,9 +695,7 @@ impl<K: Clone + Ord + Debug, V> BTree<K, V> {
         }
         Ok(())
     }
-}
 
-impl<K: Clone + Ord + PartialEq, V: Clone + PartialEq> BTree<K, V> {
     /// Recursively checks if two nodes and their subtrees are equal.
     ///
     /// This helper method performs a deep comparison of node structures, comparing not only the keys but also
@@ -725,13 +736,13 @@ impl<K: Clone + Ord + PartialEq, V: Clone + PartialEq> BTree<K, V> {
     }
 }
 
-impl<K: Clone + Ord + PartialEq, V: Clone + PartialEq> PartialEq for BTree<K, V> {
+impl<K: Clone + Ord + Debug + PartialEq, V: Clone + Debug + PartialEq> PartialEq for BTree<K, V> {
     fn eq(&self, other: &Self) -> bool {
         self.order == other.order && self.check_node_eq_recursive(self.root_node_id, other, other.root_node_id)
     }
 }
 
-impl<K: Clone + Ord + PartialEq + Debug, V: Clone> Debug for BTree<K, V> {
+impl<K: Clone + Ord + Debug + PartialEq, V: Clone + Debug + PartialEq> Debug for BTree<K, V> {
     /// Implements the `Debug` trait for `BTree` to provide a custom, tree-like visualization of the structure.
     ///
     /// This implementation uses the `fmt_node` helper function to recursively format the tree's nodes and their
@@ -777,6 +788,8 @@ struct BTreeBuilder<K, V> {
     nodes: HashMap<NodeId, Node<K, V>>,
     next_node_id: NodeId,
     node_id_stack: Vec<NodeId>,
+    current_depth: usize,
+    max_depth: usize,
 }
 
 /// Creates a new `BTreeBuilder` with default configurations.
@@ -790,7 +803,14 @@ struct BTreeBuilder<K, V> {
 impl<K, V> Default for BTreeBuilder<K, V> {
     /// Creates a new `BTreeBuilder` with default configurations.
     fn default() -> Self {
-        BTreeBuilder::<K, V> { order: 3, nodes: HashMap::new(), next_node_id: 0, node_id_stack: Vec::new() }
+        BTreeBuilder::<K, V> {
+            order: 3,
+            nodes: HashMap::new(),
+            next_node_id: 0,
+            node_id_stack: Vec::new(),
+            current_depth: 0,
+            max_depth: 0,
+        }
     }
 }
 
@@ -851,7 +871,13 @@ impl<K: Clone + Ord, V: Clone> BTreeBuilder<K, V> {
     /// # Returns
     /// A fully constructed `BTree` instance
     fn build(self) -> BTree<K, V> {
-        BTree { nodes: self.nodes, order: self.order, root_node_id: 0, next_node_id: self.next_node_id }
+        BTree {
+            nodes: self.nodes,
+            order: self.order,
+            root_node_id: 0,
+            next_node_id: self.next_node_id,
+            depth: self.max_depth,
+        }
     }
 
     /// Adds a new leaf node to the B+Tree being built.
@@ -872,6 +898,7 @@ impl<K: Clone + Ord, V: Clone> BTreeBuilder<K, V> {
     /// * `BTreeBuilderError::NodeError` - If inserting the key-child pair into the parent fails
     fn add_leaf_node(mut self, key_opt: Option<K>) -> Result<Self, BTreeBuilderError> {
         self.add_node(key_opt, Node::Leaf(LeafNode::default()))?;
+        self.current_depth += 1;
         Ok(self)
     }
 
@@ -896,6 +923,7 @@ impl<K: Clone + Ord, V: Clone> BTreeBuilder<K, V> {
         use crate::btree::node::InternalNode;
 
         self.add_node(key_opt, Node::Internal(InternalNode::default()))?;
+        self.current_depth += 1;
         Ok(self)
     }
 
@@ -980,6 +1008,8 @@ impl<K: Clone + Ord, V: Clone> BTreeBuilder<K, V> {
     /// # Errors
     /// * `BTreeBuilderError::NoNodeToEnd` - If the node stack is empty (no node to complete)
     fn end_node(mut self) -> Result<Self, BTreeBuilderError> {
+        self.max_depth = self.max_depth.max(self.current_depth);
+        self.current_depth -= 1;
         self.node_id_stack.pop().ok_or(BTreeBuilderError::NoNodeToEnd)?;
         Ok(self)
     }
@@ -994,7 +1024,12 @@ mod tests {
     use super::*;
 
     fn new_empty_btree() -> BTree<u32, u32> {
-        BTreeBuilder::<u32, u32>::default().build()
+        #[rustfmt::skip]
+        let btree = BTreeBuilder::<u32, u32>::default()
+            .add_leaf_node(None).unwrap()
+            .end_node().unwrap()
+            .build();
+        btree
     }
 
     fn new_single_node_btree() -> BTree<u32, u32> {
@@ -1011,17 +1046,17 @@ mod tests {
     #[test]
     fn reading_from_empty_btree_returns_none() {
         let btree = new_empty_btree();
-        let result = btree.get(1);
+        let result = btree.get(&1u32);
         assert_eq!(None, result);
     }
 
     // TODO : Make this test pass
-    /*#[test]
+    #[test]
     fn reading_existing_key_in_single_node_tree_return_correct_value() {
         let btree = new_single_node_btree();
-        let result = btree.get(1);
+        let result = btree.get(&1);
         assert!(matches!(result, Some(2)));
-    }*/
+    }
 }
 
 // TODO : Eventually we need to remove theses tests when the new ones have replaced them.
