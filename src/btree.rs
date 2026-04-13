@@ -1032,6 +1032,9 @@ impl<K: Clone + Ord, V: Clone> BTreeBuilder<K, V> {
 mod tests {
     use super::*;
 
+    // Returns an empty B+Tree (order 3):
+    //
+    //   []
     fn new_empty_btree() -> BTree<u32, u32> {
         #[rustfmt::skip]
         let btree = BTreeBuilder::<u32, u32>::default()
@@ -1041,58 +1044,74 @@ mod tests {
         btree
     }
 
+    // Returns a single-node B+Tree (order 3) with one key:
+    //
+    //   [10]
     fn new_single_item_btree() -> BTree<u32, u32> {
         #[rustfmt::skip]
         let btree = BTreeBuilder::<u32, u32>::default()
             .add_leaf_node(None).unwrap()
-                .add_key_value_pair(1, 2).unwrap()
+                .add_key_value_pair(10, 20).unwrap()
             .end_node().unwrap()
             .build();
         btree
     }
 
-    fn new_single_node_btree() -> BTree<u32, u32> {
+    // Returns a full single-node B+Tree (order 3, max 2 keys/node):
+    //
+    //   [10|20]
+    fn new_full_single_node_btree() -> BTree<u32, u32> {
         #[rustfmt::skip]
         let btree = BTreeBuilder::<u32, u32>::default()
             .add_leaf_node(None).unwrap()
-                .add_key_value_pair(1, 2).unwrap()
-                .add_key_value_pair(2, 4).unwrap()
+                .add_key_value_pair(10, 20).unwrap()
+                .add_key_value_pair(20, 40).unwrap()
             .end_node().unwrap()
             .build();
         btree
     }
 
+    // Returns a 2-level B+Tree (order 3) with one internal node and two leaves:
+    //
+    //      [20]
+    //     /    \
+    //   [10]  [20|30]
     fn new_multi_node_btree() -> BTree<u32, u32> {
         #[rustfmt::skip]
         let btree = BTreeBuilder::<u32, u32>::default()
             .add_internal_node(None).unwrap()
-                .add_leaf_node(Some(2)).unwrap()
-                    .add_key_value_pair(1, 2).unwrap()
+                .add_leaf_node(Some(20)).unwrap()
+                    .add_key_value_pair(10, 20).unwrap()
                 .end_node().unwrap()
                 .add_leaf_node(None).unwrap()
-                    .add_key_value_pair(2, 4).unwrap()
-                    .add_key_value_pair(3, 6).unwrap()
+                    .add_key_value_pair(20, 40).unwrap()
+                    .add_key_value_pair(30, 60).unwrap()
                 .end_node().unwrap()
             .end_node().unwrap()
             .build();
         btree
     }
 
+    // Returns a full 2-level B+Tree (order 3, max 2 keys/node):
+    //
+    //            [30 | 50]
+    //           /    |    \
+    //     [10|20] [30|40] [50|60]
     fn new_full_multi_node_btree() -> BTree<u32, u32> {
         #[rustfmt::skip]
         let btree = BTreeBuilder::<u32, u32>::default()
             .add_internal_node(None).unwrap()
-                .add_leaf_node(Some(3)).unwrap()
-                    .add_key_value_pair(1, 2).unwrap()
-                    .add_key_value_pair(2, 4).unwrap()
+                .add_leaf_node(Some(30)).unwrap()
+                    .add_key_value_pair(10, 20).unwrap()
+                    .add_key_value_pair(20, 40).unwrap()
                 .end_node().unwrap()
-                .add_leaf_node(Some(5)).unwrap()
-                    .add_key_value_pair(3, 6).unwrap()
-                    .add_key_value_pair(4, 8).unwrap()
+                .add_leaf_node(Some(50)).unwrap()
+                    .add_key_value_pair(30, 60).unwrap()
+                    .add_key_value_pair(40, 80).unwrap()
                 .end_node().unwrap()
                 .add_leaf_node(None).unwrap()
-                    .add_key_value_pair(5, 10).unwrap()
-                    .add_key_value_pair(6, 12).unwrap()
+                    .add_key_value_pair(50, 100).unwrap()
+                    .add_key_value_pair(60, 120).unwrap()
                 .end_node().unwrap()
             .end_node().unwrap()
             .build();
@@ -1105,43 +1124,43 @@ mod tests {
         #[test]
         fn reading_from_empty_btree_returns_none() {
             let btree = new_empty_btree();
-            let result = btree.get(&1u32);
+            let result = btree.get(&10);
             assert_eq!(None, result);
         }
 
         #[test]
         fn reading_existing_key_in_single_node_tree_return_correct_value() {
-            let btree = new_single_node_btree();
-            let result = btree.get(&1);
-            assert!(matches!(result, Some(2)));
+            let btree = new_full_single_node_btree();
+            let result = btree.get(&10);
+            assert_eq!(Some(&20), result);
         }
 
         #[test]
         fn reading_non_existing_key_in_single_node_tree_returns_none() {
-            let btree = new_single_node_btree();
-            let result = btree.get(&3);
+            let btree = new_full_single_node_btree();
+            let result = btree.get(&30);
             assert_eq!(None, result);
         }
 
         #[test]
         fn reading_existing_key_in_multi_node_tree_returns_correct_value() {
             let btree = new_multi_node_btree();
-            let result = btree.get(&3);
-            assert!(matches!(result, Some(6)));
+            let result = btree.get(&30);
+            assert_eq!(Some(&60), result);
         }
 
         #[test]
         fn reading_smallest_key_in_multi_node_tree_returns_correct_value() {
             let btree = new_full_multi_node_btree();
-            let result = btree.get(&1);
-            assert!(matches!(result, Some(2)));
+            let result = btree.get(&10);
+            assert_eq!(Some(&20), result);
         }
 
         #[test]
         fn reading_largest_key_in_multi_node_tree_returns_correct_value() {
             let btree = new_full_multi_node_btree();
-            let result = btree.get(&6);
-            assert!(matches!(result, Some(12)));
+            let result = btree.get(&60);
+            assert_eq!(Some(&120), result);
         }
     }
 
@@ -1161,7 +1180,7 @@ mod tests {
                 .end_node().unwrap()
                 .build();
 
-            assert!(matches!(result, Ok(())));
+            assert_eq!(Ok(()), result);
             assert_eq!(expected, btree);
         }
 
@@ -1169,14 +1188,14 @@ mod tests {
         fn inserting_multiple_keys_into_single_node_stores_in_sorted_order() {
             let mut btree = new_empty_btree();
 
-            btree.try_insert(Cell::new(2, 4)).unwrap();
-            btree.try_insert(Cell::new(1, 2)).unwrap();
+            btree.try_insert(Cell::new(20, 40)).unwrap();
+            btree.try_insert(Cell::new(10, 20)).unwrap();
 
             #[rustfmt::skip]
             let expected = BTreeBuilder::<u32, u32>::default()
                 .add_leaf_node(None).unwrap()
-                    .add_key_value_pair(1, 2).unwrap()
-                    .add_key_value_pair(2, 4).unwrap()
+                    .add_key_value_pair(10, 20).unwrap()
+                    .add_key_value_pair(20, 40).unwrap()
                 .end_node().unwrap()
                 .build();
 
@@ -1187,7 +1206,7 @@ mod tests {
         fn inserting_duplicate_key_returns_error_does_not_change_btree() {
             let mut btree = new_single_item_btree();
 
-            let result = btree.try_insert(Cell::new(1, 1));
+            let result = btree.try_insert(Cell::new(10, 10));
 
             assert_eq!(Err(BTreeError::KeyAlreadyExists), result);
             let expected = new_single_item_btree();
@@ -1198,16 +1217,97 @@ mod tests {
         fn filling_a_leaf_node_to_capacity_does_not_trigger_split() {
             let mut btree = new_empty_btree();
 
-            btree.try_insert(Cell::new(1, 2)).unwrap();
-            btree.try_insert(Cell::new(2, 4)).unwrap();
+            btree.try_insert(Cell::new(10, 20)).unwrap();
+            btree.try_insert(Cell::new(20, 40)).unwrap();
 
             #[rustfmt::skip]
             let expected = BTreeBuilder::<u32, u32>::default()
                 .add_leaf_node(None).unwrap()
-                    .add_key_value_pair(1, 2).unwrap()
-                    .add_key_value_pair(2, 4).unwrap()
+                    .add_key_value_pair(10, 20).unwrap()
+                    .add_key_value_pair(20, 40).unwrap()
                 .end_node().unwrap()
                 .build();
+            assert_eq!(expected, btree);
+        }
+    }
+
+    mod insert_leaf_split_tests {
+        use super::*;
+
+        #[test]
+        fn inserting_into_full_root_leaf_with_no_siblings_creates_new_root_and_splits_leaf() {
+            let mut btree = new_full_single_node_btree();
+
+            let result = btree.try_insert(Cell::new(30, 60));
+
+            #[rustfmt::skip]
+            let expected = BTreeBuilder::<u32, u32>::default()
+                .add_internal_node(None).unwrap()
+                    .add_leaf_node(Some(30)).unwrap()
+                        .add_key_value_pair(10, 20).unwrap()
+                        .add_key_value_pair(20, 40).unwrap()
+                    .end_node().unwrap()
+                    .add_leaf_node(None).unwrap()
+                        .add_key_value_pair(30, 60).unwrap()
+                    .end_node().unwrap()
+                .end_node().unwrap()
+                .build();
+
+            assert!(result.is_ok());
+            assert_eq!(expected, btree);
+        }
+
+        #[test]
+        fn inserting_into_full_leaf_with_full_siblings_triggers_split() {
+            #[rustfmt::skip]
+            let mut btree = BTreeBuilder::<u32, u32>::default()
+                .with_order(4)
+                .add_internal_node(None).unwrap()
+                    .add_leaf_node(Some(40)).unwrap()
+                        .add_key_value_pair(10, 20).unwrap()
+                        .add_key_value_pair(20, 40).unwrap()
+                        .add_key_value_pair(30, 60).unwrap()
+                    .end_node().unwrap()
+                    .add_leaf_node(Some(70)).unwrap()
+                        .add_key_value_pair(40, 80).unwrap()
+                        .add_key_value_pair(50, 100).unwrap()
+                        .add_key_value_pair(60, 120).unwrap()
+                    .end_node().unwrap()
+                    .add_leaf_node(None).unwrap()
+                        .add_key_value_pair(70, 140).unwrap()
+                        .add_key_value_pair(80, 160).unwrap()
+                        .add_key_value_pair(90, 180).unwrap()
+                    .end_node().unwrap()
+                .end_node().unwrap()
+                .build();
+
+            let result = btree.try_insert(Cell::new(55, 110));
+
+            #[rustfmt::skip]
+            let expected = BTreeBuilder::<u32, u32>::default()
+                .with_order(4)
+                .add_internal_node(None).unwrap()
+                    .add_leaf_node(Some(40)).unwrap()
+                        .add_key_value_pair(10, 20).unwrap()
+                        .add_key_value_pair(20, 40).unwrap()
+                        .add_key_value_pair(30, 60).unwrap()
+                    .end_node().unwrap()
+                    .add_leaf_node(Some(60)).unwrap()
+                        .add_key_value_pair(40, 80).unwrap()
+                        .add_key_value_pair(50, 100).unwrap()
+                        .add_key_value_pair(55, 110).unwrap()
+                    .end_node().unwrap()
+                    .add_leaf_node(Some(80)).unwrap()
+                        .add_key_value_pair(60, 120).unwrap()
+                        .add_key_value_pair(70, 140).unwrap()
+                    .end_node().unwrap()
+                    .add_leaf_node(None).unwrap()
+                        .add_key_value_pair(80, 160).unwrap()
+                        .add_key_value_pair(90, 180).unwrap()
+                    .end_node().unwrap()
+                .end_node().unwrap()
+                .build();
+            assert!(result.is_ok());
             assert_eq!(expected, btree);
         }
     }
@@ -1222,6 +1322,7 @@ mod tests_legacy {
     mod private_tests {
         use super::super::*;
 
+        ///
         #[test]
         fn test_calculate_balanced_cells_distribution() {
             let distribution = BTree::<u32, u32>::calculate_balanced_cells_distribution(36, 3);
@@ -1258,7 +1359,7 @@ mod tests_legacy {
                 .end_node()?
                 .build();
         let result = btree.try_insert(Cell::new(1, 43));
-        assert!(matches!(result, Err(BTreeError::KeyAlreadyExists)));
+        assert_eq!(Err(BTreeError::KeyAlreadyExists), result);
         Ok(())
     }
 
@@ -1271,7 +1372,7 @@ mod tests_legacy {
                 .end_node()?
                 .build();
         let result = btree.try_insert(Cell::new(2, 43));
-        assert!(matches!(result, Ok(())));
+        assert_eq!(Ok(()), result);
         Ok(())
     }
 
@@ -1325,7 +1426,7 @@ mod tests_legacy {
 
         let result = btree.try_insert(Cell::new(3, 44));
 
-        assert!(matches!(result, Ok(())));
+        assert_eq!(Ok(()), result);
         assert_eq!(expected, btree);
         Ok(())
     }
@@ -1397,7 +1498,7 @@ mod tests_legacy {
 
         let result = btree.try_insert(Cell::new(35, 35));
 
-        assert!(matches!(result, Ok(())));
+        assert_eq!(Ok(()), result);
         assert_eq!(expected, btree);
         Ok(())
     }
@@ -1489,7 +1590,7 @@ mod tests_legacy {
 
         let result = btree.try_insert(Cell::new(25, 25));
 
-        assert!(matches!(result, Ok(())));
+        assert_eq!(Ok(()), result);
         assert_eq!(expected, btree);
         Ok(())
     }
@@ -1564,7 +1665,7 @@ mod tests_legacy {
 
         let result = btree.try_insert(Cell::new(70, 70));
 
-        assert!(matches!(result, Ok(())));
+        assert_eq!(Ok(()), result);
         assert_eq!(expected, btree);
         Ok(())
     }
@@ -1649,7 +1750,7 @@ mod tests_legacy {
 
         let result = btree.try_insert(Cell::new(35, 35));
 
-        assert!(matches!(result, Ok(())));
+        assert_eq!(Ok(()), result);
         assert_eq!(expected, btree);
         Ok(())
     }
