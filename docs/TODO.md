@@ -13,10 +13,10 @@
 
 ### Insert — Basic / No Rebalancing
 
-- [ ] Inserting into an empty tree creates a root leaf with one entry
-- [ ] Inserting multiple keys into a single leaf node stores them in sorted order
-- [ ] Inserting a duplicate key updates (or rejects) the existing value according to your chosen semantics
-- [ ] Filling a leaf node exactly to capacity without triggering a split
+- [x] Inserting into an empty tree creates a tree with an entry in the root
+- [x] Inserting multiple keys into a single leaf node stores them in sorted order
+- [x] Trying to insert a duplicate key updates returns an error and does not change the tree
+- [x] Filling a leaf node exactly to capacity without triggering a split
 
 ### Insert — Leaf Split (no redistribution possible)
 

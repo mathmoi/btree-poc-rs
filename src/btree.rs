@@ -57,7 +57,7 @@ impl<K: Clone, V> BalanceCell<K, V> {
 // =====================================================================================================================
 
 /// Errors that can occur during B+Tree operations.
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq)]
 pub enum BTreeError {
     /// Attempted to insert a key that already exists in the tree.
     #[error("Attempted to insert a key that already exists in the tree")]
@@ -71,7 +71,7 @@ pub enum BTreeError {
 
     /// An unexpected error occurred during a B+Tree operation.
     #[error("Unexpected error: {0}")]
-    Unexpected(#[from] Box<dyn std::error::Error + Send + Sync>),
+    Unexpected(String),
 }
 
 impl From<NodeError> for BTreeError {
@@ -79,7 +79,7 @@ impl From<NodeError> for BTreeError {
         match err {
             NodeError::KeyAlreadyExists => BTreeError::KeyAlreadyExists,
             NodeError::Unexpected(e) => BTreeError::Unexpected(e),
-            NodeError::NotInternalNode => BTreeError::Unexpected(Box::new(err)),
+            NodeError::NotInternalNode => BTreeError::Unexpected(err.to_string()),
         }
     }
 }
@@ -253,7 +253,7 @@ impl<K: Clone + Ord + Debug + PartialEq, V: Clone + Debug + PartialEq> BTree<K, 
         current_node_id
     }
 
-    /// Inserts a key-value pair into the B+Tree.
+    /// Try to inserts a key-value pair into the B+Tree.
     ///
     /// The insertion maintains the B+Tree properties by recursively traversing to the appropriate leaf node and
     /// inserting the cell. If the key already exists anywhere in the tree, the insertion fails.
@@ -266,8 +266,8 @@ impl<K: Clone + Ord + Debug + PartialEq, V: Clone + Debug + PartialEq> BTree<K, 
     ///
     /// # Errors
     /// * `BTreeError::KeyAlreadyExists` - If the key is already present in the tree
-    pub fn insert(&mut self, cell: Cell<K, V>) -> Result<(), BTreeError> {
-        self.insert_recursive(0, cell, Vec::new())
+    pub fn try_insert(&mut self, cell: Cell<K, V>) -> Result<(), BTreeError> {
+        self.try_insert_recursive(0, cell, Vec::new())
     }
 
     /// Recursively inserts a cell into the tree starting from the specified node.
@@ -288,7 +288,7 @@ impl<K: Clone + Ord + Debug + PartialEq, V: Clone + Debug + PartialEq> BTree<K, 
     /// # Panics
     /// Panics if the specified node ID does not exist in the tree's node storage. This indicates a bug in the tree
     /// implementation, as all node IDs passed to this method should be valid by invariant.
-    fn insert_recursive(
+    fn try_insert_recursive(
         &mut self,
         node_id: NodeId,
         cell: Cell<K, V>,
@@ -305,7 +305,7 @@ impl<K: Clone + Ord + Debug + PartialEq, V: Clone + Debug + PartialEq> BTree<K, 
             Node::Internal(internal) => {
                 let child_id = internal.find_child_id(&cell.key);
                 parents.push(node_id);
-                self.insert_recursive(child_id, cell, parents)
+                self.try_insert_recursive(child_id, cell, parents)
             }
         }
     }
@@ -1041,6 +1041,16 @@ mod tests {
         btree
     }
 
+    fn new_single_item_btree() -> BTree<u32, u32> {
+        #[rustfmt::skip]
+        let btree = BTreeBuilder::<u32, u32>::default()
+            .add_leaf_node(None).unwrap()
+                .add_key_value_pair(1, 2).unwrap()
+            .end_node().unwrap()
+            .build();
+        btree
+    }
+
     fn new_single_node_btree() -> BTree<u32, u32> {
         #[rustfmt::skip]
         let btree = BTreeBuilder::<u32, u32>::default()
@@ -1089,46 +1099,117 @@ mod tests {
         btree
     }
 
-    #[test]
-    fn reading_from_empty_btree_returns_none() {
-        let btree = new_empty_btree();
-        let result = btree.get(&1u32);
-        assert_eq!(None, result);
+    mod get_tests {
+        use super::*;
+
+        #[test]
+        fn reading_from_empty_btree_returns_none() {
+            let btree = new_empty_btree();
+            let result = btree.get(&1u32);
+            assert_eq!(None, result);
+        }
+
+        #[test]
+        fn reading_existing_key_in_single_node_tree_return_correct_value() {
+            let btree = new_single_node_btree();
+            let result = btree.get(&1);
+            assert!(matches!(result, Some(2)));
+        }
+
+        #[test]
+        fn reading_non_existing_key_in_single_node_tree_returns_none() {
+            let btree = new_single_node_btree();
+            let result = btree.get(&3);
+            assert_eq!(None, result);
+        }
+
+        #[test]
+        fn reading_existing_key_in_multi_node_tree_returns_correct_value() {
+            let btree = new_multi_node_btree();
+            let result = btree.get(&3);
+            assert!(matches!(result, Some(6)));
+        }
+
+        #[test]
+        fn reading_smallest_key_in_multi_node_tree_returns_correct_value() {
+            let btree = new_full_multi_node_btree();
+            let result = btree.get(&1);
+            assert!(matches!(result, Some(2)));
+        }
+
+        #[test]
+        fn reading_largest_key_in_multi_node_tree_returns_correct_value() {
+            let btree = new_full_multi_node_btree();
+            let result = btree.get(&6);
+            assert!(matches!(result, Some(12)));
+        }
     }
 
-    #[test]
-    fn reading_existing_key_in_single_node_tree_return_correct_value() {
-        let btree = new_single_node_btree();
-        let result = btree.get(&1);
-        assert!(matches!(result, Some(2)));
-    }
+    mod insert_basic_tests {
+        use super::*;
 
-    #[test]
-    fn reading_non_existing_key_in_single_node_tree_returns_none() {
-        let btree = new_single_node_btree();
-        let result = btree.get(&3);
-        assert_eq!(None, result);
-    }
+        #[test]
+        fn inserting_into_empty_tree_creates_root_entry() {
+            let mut btree = new_empty_btree();
 
-    #[test]
-    fn reading_existing_key_in_multi_node_tree_returns_correct_value() {
-        let btree = new_multi_node_btree();
-        let result = btree.get(&3);
-        assert!(matches!(result, Some(6)));
-    }
+            let result = btree.try_insert(Cell::new(1, 2));
 
-    #[test]
-    fn reading_smallest_key_in_multi_node_tree_returns_correct_value() {
-        let btree = new_full_multi_node_btree();
-        let result = btree.get(&1);
-        assert!(matches!(result, Some(2)));
-    }
+            #[rustfmt::skip]
+            let expected = BTreeBuilder::<u32, u32>::default()
+                .add_leaf_node(None).unwrap()
+                    .add_key_value_pair(1, 2).unwrap()
+                .end_node().unwrap()
+                .build();
 
-    #[test]
-    fn reading_largest_key_in_multi_node_tree_returns_correct_value() {
-        let btree = new_full_multi_node_btree();
-        let result = btree.get(&6);
-        assert!(matches!(result, Some(12)));
+            assert!(matches!(result, Ok(())));
+            assert_eq!(expected, btree);
+        }
+
+        #[test]
+        fn inserting_multiple_keys_into_single_node_stores_in_sorted_order() {
+            let mut btree = new_empty_btree();
+
+            btree.try_insert(Cell::new(2, 4)).unwrap();
+            btree.try_insert(Cell::new(1, 2)).unwrap();
+
+            #[rustfmt::skip]
+            let expected = BTreeBuilder::<u32, u32>::default()
+                .add_leaf_node(None).unwrap()
+                    .add_key_value_pair(1, 2).unwrap()
+                    .add_key_value_pair(2, 4).unwrap()
+                .end_node().unwrap()
+                .build();
+
+            assert_eq!(expected, btree);
+        }
+
+        #[test]
+        fn inserting_duplicate_key_returns_error_does_not_change_btree() {
+            let mut btree = new_single_item_btree();
+
+            let result = btree.try_insert(Cell::new(1, 1));
+
+            assert_eq!(Err(BTreeError::KeyAlreadyExists), result);
+            let expected = new_single_item_btree();
+            assert_eq!(expected, btree);
+        }
+
+        #[test]
+        fn filling_a_leaf_node_to_capacity_does_not_trigger_split() {
+            let mut btree = new_empty_btree();
+
+            btree.try_insert(Cell::new(1, 2)).unwrap();
+            btree.try_insert(Cell::new(2, 4)).unwrap();
+
+            #[rustfmt::skip]
+            let expected = BTreeBuilder::<u32, u32>::default()
+                .add_leaf_node(None).unwrap()
+                    .add_key_value_pair(1, 2).unwrap()
+                    .add_key_value_pair(2, 4).unwrap()
+                .end_node().unwrap()
+                .build();
+            assert_eq!(expected, btree);
+        }
     }
 }
 
@@ -1163,7 +1244,7 @@ mod tests_legacy {
     #[test]
     fn when_inserting_key_value_pair_into_empty_btree_succeeds() -> Result<(), Box<dyn Error>> {
         let mut btree = BTree::<u32, u32>::new(3)?;
-        let result = btree.insert(Cell::new(1, 42));
+        let result = btree.try_insert(Cell::new(1, 42));
         assert!(result.is_ok());
         Ok(())
     }
@@ -1176,7 +1257,7 @@ mod tests_legacy {
                     .add_key_value_pair(1, 42)?
                 .end_node()?
                 .build();
-        let result = btree.insert(Cell::new(1, 43));
+        let result = btree.try_insert(Cell::new(1, 43));
         assert!(matches!(result, Err(BTreeError::KeyAlreadyExists)));
         Ok(())
     }
@@ -1189,7 +1270,7 @@ mod tests_legacy {
                     .add_key_value_pair(1, 42)?
                 .end_node()?
                 .build();
-        let result = btree.insert(Cell::new(2, 43));
+        let result = btree.try_insert(Cell::new(2, 43));
         assert!(matches!(result, Ok(())));
         Ok(())
     }
@@ -1242,7 +1323,7 @@ mod tests_legacy {
             .end_node()?
             .build();
 
-        let result = btree.insert(Cell::new(3, 44));
+        let result = btree.try_insert(Cell::new(3, 44));
 
         assert!(matches!(result, Ok(())));
         assert_eq!(expected, btree);
@@ -1314,7 +1395,7 @@ mod tests_legacy {
                 .end_node()?
             .build();
 
-        let result = btree.insert(Cell::new(35, 35));
+        let result = btree.try_insert(Cell::new(35, 35));
 
         assert!(matches!(result, Ok(())));
         assert_eq!(expected, btree);
@@ -1406,7 +1487,7 @@ mod tests_legacy {
             .end_node()?
             .build();
 
-        let result = btree.insert(Cell::new(25, 25));
+        let result = btree.try_insert(Cell::new(25, 25));
 
         assert!(matches!(result, Ok(())));
         assert_eq!(expected, btree);
@@ -1481,7 +1562,7 @@ mod tests_legacy {
             .end_node()?
             .build();
 
-        let result = btree.insert(Cell::new(70, 70));
+        let result = btree.try_insert(Cell::new(70, 70));
 
         assert!(matches!(result, Ok(())));
         assert_eq!(expected, btree);
@@ -1566,7 +1647,7 @@ mod tests_legacy {
             .end_node()?
             .build();
 
-        let result = btree.insert(Cell::new(35, 35));
+        let result = btree.try_insert(Cell::new(35, 35));
 
         assert!(matches!(result, Ok(())));
         assert_eq!(expected, btree);

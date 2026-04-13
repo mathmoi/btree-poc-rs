@@ -27,7 +27,7 @@ pub enum NodeError {
 
     /// An unexpected error occurred during a node operation.
     #[error("Unexpected error: {0}")]
-    Unexpected(#[from] Box<dyn std::error::Error + Send + Sync>),
+    Unexpected(String),
 }
 
 /// Converts a `SlotDirectoryError` into a `NodeError`.
@@ -38,7 +38,7 @@ impl From<SlotDirectoryError> for NodeError {
     fn from(err: SlotDirectoryError) -> Self {
         match err {
             SlotDirectoryError::KeyAlreadyExists => NodeError::KeyAlreadyExists,
-            SlotDirectoryError::IndexOutOfBounds { .. } => NodeError::Unexpected(Box::new(err)),
+            SlotDirectoryError::IndexOutOfBounds { .. } => NodeError::Unexpected(err.to_string()),
         }
     }
 }
