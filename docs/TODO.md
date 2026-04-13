@@ -4,13 +4,12 @@
 
 ### Read (Search)
 
-- [ ] Reading from an empty tree should return None
-- [ ] Reading an existing key in a single node tree should return the correct value
-- [ ] Reading a non-existing key in a non-empty single node tree should return None
-- [ ] Reading a key that exists in a multi-level tree traverse the nodes and return the correct value
-- [ ] Reading the smallest key in the tree returns the correct value
-- [ ] Reading the largest key in the tree returns the correct value
-
+- [x] Reading from an empty tree should return None
+- [x] Reading an existing key in a single node tree should return the correct value
+- [x] Reading a non-existing key in a non-empty single node tree should return None
+- [x] Reading a key that exists in a multi-level tree traverse the nodes and return the correct value
+- [x] Reading the smallest key in the tree returns the correct value
+- [x] Reading the largest key in the tree returns the correct value
 
 ### Insert — Basic / No Rebalancing
 
@@ -18,7 +17,6 @@
 - [ ] Inserting multiple keys into a single leaf node stores them in sorted order
 - [ ] Inserting a duplicate key updates (or rejects) the existing value according to your chosen semantics
 - [ ] Filling a leaf node exactly to capacity without triggering a split
-
 
 ### Insert — Leaf Split (no redistribution possible)
 
@@ -30,7 +28,6 @@
 - [ ] After a leaf split, the parent internal node receives the correct separator key
 - [ ] After a leaf split, keys are distributed correctly between the two resulting leaves
 
-
 ### Insert — Leaf Redistribution (borrow instead of split)
 
 - [ ] Inserting into a full leaf redistributes to the right sibling when it has space
@@ -41,14 +38,12 @@
 - [ ] Inserting into a full leaf at the right extremity redistributes to the left sibling when it has space
 - [ ] Redistribution prefers a specific sibling when both have space (tests your tie-breaking policy)
 
-
 ### Insert — Internal Node Split (no redistribution possible)
 
 - [ ] A leaf split that overflows a full internal node whose siblings are also full triggers an internal node split
 - [ ] After an internal node split, the promoted key is pushed to the parent correctly
 - [ ] After an internal node split, child pointers are distributed correctly between the two internal nodes
 - [ ] Cascading splits propagate up to the root, increasing tree height by one
-
 
 ### Insert — Internal Node Redistribution
 
@@ -58,14 +53,12 @@
 - [ ] Internal redistribution at the left extremity borrows from the right internal sibling
 - [ ] Internal redistribution at the right extremity borrows from the left internal sibling
 
-
 ### Delete — Basic / No Rebalancing
 
 - [ ] Deleting from a single-entry root leaf produces an empty tree
 - [ ] Deleting a key that doesn't exist returns not-found and leaves the tree unchanged
 - [ ] Deleting a key from a leaf that stays at or above minimum occupancy requires no rebalancing
 - [ ] Deleting a key that appears as a separator in an ancestor updates (or doesn't need to update) the separator correctly
-
 
 ### Delete — Leaf Redistribution (borrow instead of merge)
 
@@ -76,7 +69,6 @@
 - [ ] Deleting from a leaf at the left extremity borrows from the right sibling
 - [ ] Deleting from a leaf at the right extremity borrows from the left sibling
 
-
 ### Delete — Leaf Merge (redistribution not possible)
 
 - [ ] Deleting from an underflowing leaf merges with the right sibling when it is also at minimum
@@ -86,7 +78,6 @@
 - [ ] Merging at the left extremity merges with the right sibling
 - [ ] Merging at the right extremity merges with the left siblings
 
-
 ### Delete — Internal Node Redistribution
 
 - [ ] A leaf merge that causes an internal node to underflow borrows from the right internal sibling when it has enough keys
@@ -95,13 +86,11 @@
 - [ ] Internal redistribution at the left extremity borrows from the right internal sibling
 - [ ] Internal redistribution at the right extremity borrows from the left internal sibling
 
-
 ### Delete — Internal Node Merge
 
 - [ ] A leaf merge that causes an internal node to underflow with minimum-occupancy siblings triggers an internal merge
 - [ ] After an internal merge, the pulled-down parent separator and children are combined correctly
 - [ ] Cascading merges propagate up to the root, decreasing tree height when the root has one remaining child
-
 
 ### Structural Invariants (applicable after every mutating operation)
 
@@ -111,7 +100,6 @@
 - [ ] Keys within every node are in strictly sorted order
 - [ ] Separator keys in internal nodes correctly partition the ranges of their children
 - [ ] The root has at least 2 children if it is an internal node
-
 
 ### Integration / Stress
 

@@ -1052,6 +1052,43 @@ mod tests {
         btree
     }
 
+    fn new_multi_node_btree() -> BTree<u32, u32> {
+        #[rustfmt::skip]
+        let btree = BTreeBuilder::<u32, u32>::default()
+            .add_internal_node(None).unwrap()
+                .add_leaf_node(Some(2)).unwrap()
+                    .add_key_value_pair(1, 2).unwrap()
+                .end_node().unwrap()
+                .add_leaf_node(None).unwrap()
+                    .add_key_value_pair(2, 4).unwrap()
+                    .add_key_value_pair(3, 6).unwrap()
+                .end_node().unwrap()
+            .end_node().unwrap()
+            .build();
+        btree
+    }
+
+    fn new_full_multi_node_btree() -> BTree<u32, u32> {
+        #[rustfmt::skip]
+        let btree = BTreeBuilder::<u32, u32>::default()
+            .add_internal_node(None).unwrap()
+                .add_leaf_node(Some(3)).unwrap()
+                    .add_key_value_pair(1, 2).unwrap()
+                    .add_key_value_pair(2, 4).unwrap()
+                .end_node().unwrap()
+                .add_leaf_node(Some(5)).unwrap()
+                    .add_key_value_pair(3, 6).unwrap()
+                    .add_key_value_pair(4, 8).unwrap()
+                .end_node().unwrap()
+                .add_leaf_node(None).unwrap()
+                    .add_key_value_pair(5, 10).unwrap()
+                    .add_key_value_pair(6, 12).unwrap()
+                .end_node().unwrap()
+            .end_node().unwrap()
+            .build();
+        btree
+    }
+
     #[test]
     fn reading_from_empty_btree_returns_none() {
         let btree = new_empty_btree();
@@ -1064,6 +1101,34 @@ mod tests {
         let btree = new_single_node_btree();
         let result = btree.get(&1);
         assert!(matches!(result, Some(2)));
+    }
+
+    #[test]
+    fn reading_non_existing_key_in_single_node_tree_returns_none() {
+        let btree = new_single_node_btree();
+        let result = btree.get(&3);
+        assert_eq!(None, result);
+    }
+
+    #[test]
+    fn reading_existing_key_in_multi_node_tree_returns_correct_value() {
+        let btree = new_multi_node_btree();
+        let result = btree.get(&3);
+        assert!(matches!(result, Some(6)));
+    }
+
+    #[test]
+    fn reading_smallest_key_in_multi_node_tree_returns_correct_value() {
+        let btree = new_full_multi_node_btree();
+        let result = btree.get(&1);
+        assert!(matches!(result, Some(2)));
+    }
+
+    #[test]
+    fn reading_largest_key_in_multi_node_tree_returns_correct_value() {
+        let btree = new_full_multi_node_btree();
+        let result = btree.get(&6);
+        assert!(matches!(result, Some(12)));
     }
 }
 
