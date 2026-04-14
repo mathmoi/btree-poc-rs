@@ -685,21 +685,40 @@ impl<K: Clone + Ord + Debug + PartialEq, V: Clone + Debug + PartialEq> BTree<K, 
     fn fmt_node(
         &self,
         node_id: NodeId,
-        prefix: &str,
-        is_last: bool,
+        separator_key: Option<&K>,
+        indent: &str,
         f: &mut std::fmt::Formatter<'_>,
     ) -> std::fmt::Result {
-        let connector = if is_last { "└── " } else { "├── " };
         let node = self.get_node(node_id);
+        let sep_str = match separator_key {
+            Some(k) => format!("[{:?}]", k),
+            None => "    ".to_string(),
+        };
+        let sep_str = sep_str.trim_end();
 
-        writeln!(f, "{}{}{:?}", prefix, connector, node)?;
-
-        // If it's an internal node, recursively print its children
-        if let Node::Internal(internal_node) = node {
-            let child_prefix = format!("{}{}", prefix, if is_last { "    " } else { "│   " });
-            for (i, child_id) in internal_node.children().enumerate() {
-                let is_last_child = i == internal_node.len() - 1;
-                self.fmt_node(child_id, &child_prefix, is_last_child, f)?;
+        match node {
+            Node::Leaf(leaf) => {
+                write!(f, "{}leaf{} {{", indent, sep_str)?;
+                for (i, cell) in leaf.iter().enumerate() {
+                    if i == 0 {
+                        write!(f, " ")?;
+                    } else {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{:?} => {:?}", cell.key, cell.value)?;
+                }
+                writeln!(f, " }},")?;
+            }
+            Node::Internal(internal) => {
+                writeln!(f, "{}internal{} {{", indent, sep_str)?;
+                let child_indent = format!("{}    ", indent);
+                let keys: Vec<&K> = internal.keys().collect();
+                let children: Vec<NodeId> = internal.children().collect();
+                for (i, &child_id) in children.iter().enumerate() {
+                    let child_sep = keys.get(i).copied();
+                    self.fmt_node(child_id, child_sep, &child_indent, f)?;
+                }
+                writeln!(f, "{}}},", indent)?;
             }
         }
         Ok(())
@@ -765,13 +784,12 @@ impl<K: Clone + Ord + Debug + PartialEq, V: Clone + Debug + PartialEq> Debug for
     /// * `Ok(())` - If formatting was successful
     /// * `Err` - If a formatting error occurred
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Write the header line with the tree's order
-        writeln!(f, "B+Tree (order={}):", self.order)?;
-
-        // Use the helper function to recursively format the tree starting from the root node
-        self.fmt_node(self.root_node_id, "", true, f)?;
-
-        Ok(())
+        writeln!(f, "btree! {{")?;
+        if self.order != 3 {
+            writeln!(f, "    order: {},", self.order)?;
+        }
+        self.fmt_node(self.root_node_id, None, "    ", f)?;
+        write!(f, "}}")
     }
 }
 
@@ -1025,6 +1043,120 @@ impl<K: Clone + Ord, V: Clone> BTreeBuilder<K, V> {
 }
 
 // =====================================================================================================================
+// btree! macro — declarative DSL for building B+Trees in tests
+// =====================================================================================================================
+
+/// Macro for declaratively building B+Tree instances in tests.
+///
+/// # Syntax
+///
+/// ```text
+/// btree! {
+///     // Empty leaf (single empty root node):
+///     leaf {}
+///
+///     // Leaf with key-value pairs:
+///     leaf { 10 => 20, 20 => 40 }
+///
+///     // With custom order (default is 3):
+///     order: 4,
+///     leaf { 10 => 20 }
+///
+///     // Internal node with children:
+///     order: 4,
+///     internal {
+///         leaf[40] { 10 => 20, 20 => 40, 30 => 60 },
+///         leaf[60] { 40 => 80, 50 => 100 },
+///         leaf     { 60 => 120, 70 => 140 },
+///     }
+///
+///     // Nested internal nodes:
+///     internal {
+///         internal[50] {
+///             leaf[20] { 10 => 1 },
+///             leaf     { 20 => 2 },
+///         },
+///         leaf { 50 => 5 },
+///     }
+/// ```
+///
+/// Children with a `[key]` annotation use that key as the separator in the parent.
+/// The last child (without a `[key]`) becomes the rightmost child.
+#[cfg(test)]
+macro_rules! btree {
+    // --- internal dispatch: leaf node ---
+    (@node $builder:ident, $key:expr, leaf { $($cells:tt)* }) => {
+        $builder = $builder.add_leaf_node($key).unwrap();
+        btree!(@cells $builder, $($cells)*);
+        $builder = $builder.end_node().unwrap();
+    };
+
+    // --- cells: key => value, more ---
+    (@cells $builder:ident, $k:expr => $v:expr, $($rest:tt)*) => {
+        $builder = $builder.add_key_value_pair($k, $v).unwrap();
+        btree!(@cells $builder, $($rest)*);
+    };
+    // --- cells: key => value (last) ---
+    (@cells $builder:ident, $k:expr => $v:expr $(,)?) => {
+        $builder = $builder.add_key_value_pair($k, $v).unwrap();
+    };
+    // --- cells: key only, more (value defaults to key * 2) ---
+    (@cells $builder:ident, $k:expr, $($rest:tt)*) => {
+        $builder = $builder.add_key_value_pair($k, $k * 2).unwrap();
+        btree!(@cells $builder, $($rest)*);
+    };
+    // --- cells: key only (last, value defaults to key * 2) ---
+    (@cells $builder:ident, $k:expr $(,)?) => {
+        $builder = $builder.add_key_value_pair($k, $k * 2).unwrap();
+    };
+    // --- cells: empty ---
+    (@cells $builder:ident,) => {};
+
+    // --- internal dispatch: internal node ---
+    (@node $builder:ident, $key:expr, internal { $($children:tt)* }) => {
+        $builder = $builder.add_internal_node($key).unwrap();
+        btree!(@children $builder, $($children)*);
+        $builder = $builder.end_node().unwrap();
+    };
+
+    // --- children: leaf with separator key ---
+    (@children $builder:ident, leaf[$sep:expr] { $($cells:tt)* } , $($rest:tt)*) => {
+        btree!(@node $builder, Some($sep), leaf { $($cells)* });
+        btree!(@children $builder, $($rest)*);
+    };
+    // --- children: leaf without separator key (rightmost child) ---
+    (@children $builder:ident, leaf { $($cells:tt)* } $(,)?) => {
+        btree!(@node $builder, None, leaf { $($cells)* });
+    };
+
+    // --- children: internal with separator key ---
+    (@children $builder:ident, internal[$sep:expr] { $($inner:tt)* } , $($rest:tt)*) => {
+        btree!(@node $builder, Some($sep), internal { $($inner)* });
+        btree!(@children $builder, $($rest)*);
+    };
+    // --- children: internal without separator key (rightmost child) ---
+    (@children $builder:ident, internal { $($inner:tt)* } $(,)?) => {
+        btree!(@node $builder, None, internal { $($inner)* });
+    };
+
+    // --- children: base case (empty) ---
+    (@children $builder:ident,) => {};
+
+    // Entry point: with explicit order
+    (order: $order:expr, $($rest:tt)+) => {{
+        let mut builder = BTreeBuilder::<_, _>::default().with_order($order);
+        btree!(@node builder, None, $($rest)+);
+        builder.build()
+    }};
+    // Entry point: default order (3)
+    ($($rest:tt)+) => {{
+        let mut builder = BTreeBuilder::<_, _>::default();
+        btree!(@node builder, None, $($rest)+);
+        builder.build()
+    }};
+}
+
+// =====================================================================================================================
 // Tests
 // =====================================================================================================================
 
@@ -1036,39 +1168,21 @@ mod tests {
     //
     //   []
     fn new_empty_btree() -> BTree<u32, u32> {
-        #[rustfmt::skip]
-        let btree = BTreeBuilder::<u32, u32>::default()
-            .add_leaf_node(None).unwrap()
-            .end_node().unwrap()
-            .build();
-        btree
+        btree! { leaf {} }
     }
 
     // Returns a single-node B+Tree (order 3) with one key:
     //
     //   [10]
     fn new_single_item_btree() -> BTree<u32, u32> {
-        #[rustfmt::skip]
-        let btree = BTreeBuilder::<u32, u32>::default()
-            .add_leaf_node(None).unwrap()
-                .add_key_value_pair(10, 20).unwrap()
-            .end_node().unwrap()
-            .build();
-        btree
+        btree! { leaf { 10 } }
     }
 
     // Returns a full single-node B+Tree (order 3, max 2 keys/node):
     //
     //   [10|20]
     fn new_full_single_node_btree() -> BTree<u32, u32> {
-        #[rustfmt::skip]
-        let btree = BTreeBuilder::<u32, u32>::default()
-            .add_leaf_node(None).unwrap()
-                .add_key_value_pair(10, 20).unwrap()
-                .add_key_value_pair(20, 40).unwrap()
-            .end_node().unwrap()
-            .build();
-        btree
+        btree! { leaf { 10, 20 } }
     }
 
     // Returns a 2-level B+Tree (order 3) with one internal node and two leaves:
@@ -1077,19 +1191,12 @@ mod tests {
     //     /    \
     //   [10]  [20|30]
     fn new_multi_node_btree() -> BTree<u32, u32> {
-        #[rustfmt::skip]
-        let btree = BTreeBuilder::<u32, u32>::default()
-            .add_internal_node(None).unwrap()
-                .add_leaf_node(Some(20)).unwrap()
-                    .add_key_value_pair(10, 20).unwrap()
-                .end_node().unwrap()
-                .add_leaf_node(None).unwrap()
-                    .add_key_value_pair(20, 40).unwrap()
-                    .add_key_value_pair(30, 60).unwrap()
-                .end_node().unwrap()
-            .end_node().unwrap()
-            .build();
-        btree
+        btree! {
+            internal {
+                leaf[20] { 10 },
+                leaf     { 20, 30 },
+            }
+        }
     }
 
     // Returns a full 2-level B+Tree (order 3, max 2 keys/node):
@@ -1098,24 +1205,13 @@ mod tests {
     //           /    |    \
     //     [10|20] [30|40] [50|60]
     fn new_full_multi_node_btree() -> BTree<u32, u32> {
-        #[rustfmt::skip]
-        let btree = BTreeBuilder::<u32, u32>::default()
-            .add_internal_node(None).unwrap()
-                .add_leaf_node(Some(30)).unwrap()
-                    .add_key_value_pair(10, 20).unwrap()
-                    .add_key_value_pair(20, 40).unwrap()
-                .end_node().unwrap()
-                .add_leaf_node(Some(50)).unwrap()
-                    .add_key_value_pair(30, 60).unwrap()
-                    .add_key_value_pair(40, 80).unwrap()
-                .end_node().unwrap()
-                .add_leaf_node(None).unwrap()
-                    .add_key_value_pair(50, 100).unwrap()
-                    .add_key_value_pair(60, 120).unwrap()
-                .end_node().unwrap()
-            .end_node().unwrap()
-            .build();
-        btree
+        btree! {
+            internal {
+                leaf[30] { 10, 20 },
+                leaf[50] { 30, 40 },
+                leaf     { 50, 60 },
+            }
+        }
     }
 
     mod get_tests {
@@ -1173,12 +1269,7 @@ mod tests {
 
             let result = btree.try_insert(Cell::new(1, 2));
 
-            #[rustfmt::skip]
-            let expected = BTreeBuilder::<u32, u32>::default()
-                .add_leaf_node(None).unwrap()
-                    .add_key_value_pair(1, 2).unwrap()
-                .end_node().unwrap()
-                .build();
+            let expected = btree! { leaf { 1 } };
 
             assert_eq!(Ok(()), result);
             assert_eq!(expected, btree);
@@ -1191,13 +1282,7 @@ mod tests {
             btree.try_insert(Cell::new(20, 40)).unwrap();
             btree.try_insert(Cell::new(10, 20)).unwrap();
 
-            #[rustfmt::skip]
-            let expected = BTreeBuilder::<u32, u32>::default()
-                .add_leaf_node(None).unwrap()
-                    .add_key_value_pair(10, 20).unwrap()
-                    .add_key_value_pair(20, 40).unwrap()
-                .end_node().unwrap()
-                .build();
+            let expected = btree! { leaf { 10, 20 } };
 
             assert_eq!(expected, btree);
         }
@@ -1220,13 +1305,7 @@ mod tests {
             btree.try_insert(Cell::new(10, 20)).unwrap();
             btree.try_insert(Cell::new(20, 40)).unwrap();
 
-            #[rustfmt::skip]
-            let expected = BTreeBuilder::<u32, u32>::default()
-                .add_leaf_node(None).unwrap()
-                    .add_key_value_pair(10, 20).unwrap()
-                    .add_key_value_pair(20, 40).unwrap()
-                .end_node().unwrap()
-                .build();
+            let expected = btree! { leaf { 10, 20 } };
             assert_eq!(expected, btree);
         }
     }
@@ -1240,18 +1319,12 @@ mod tests {
 
             let result = btree.try_insert(Cell::new(30, 60));
 
-            #[rustfmt::skip]
-            let expected = BTreeBuilder::<u32, u32>::default()
-                .add_internal_node(None).unwrap()
-                    .add_leaf_node(Some(30)).unwrap()
-                        .add_key_value_pair(10, 20).unwrap()
-                        .add_key_value_pair(20, 40).unwrap()
-                    .end_node().unwrap()
-                    .add_leaf_node(None).unwrap()
-                        .add_key_value_pair(30, 60).unwrap()
-                    .end_node().unwrap()
-                .end_node().unwrap()
-                .build();
+            let expected = btree! {
+                internal {
+                    leaf[30] { 10, 20 },
+                    leaf     { 30 },
+                }
+            };
 
             assert!(result.is_ok());
             assert_eq!(expected, btree);
@@ -1259,54 +1332,26 @@ mod tests {
 
         #[test]
         fn inserting_into_full_leaf_with_full_siblings_triggers_split() {
-            #[rustfmt::skip]
-            let mut btree = BTreeBuilder::<u32, u32>::default()
-                .with_order(4)
-                .add_internal_node(None).unwrap()
-                    .add_leaf_node(Some(40)).unwrap()
-                        .add_key_value_pair(10, 20).unwrap()
-                        .add_key_value_pair(20, 40).unwrap()
-                        .add_key_value_pair(30, 60).unwrap()
-                    .end_node().unwrap()
-                    .add_leaf_node(Some(70)).unwrap()
-                        .add_key_value_pair(40, 80).unwrap()
-                        .add_key_value_pair(50, 100).unwrap()
-                        .add_key_value_pair(60, 120).unwrap()
-                    .end_node().unwrap()
-                    .add_leaf_node(None).unwrap()
-                        .add_key_value_pair(70, 140).unwrap()
-                        .add_key_value_pair(80, 160).unwrap()
-                        .add_key_value_pair(90, 180).unwrap()
-                    .end_node().unwrap()
-                .end_node().unwrap()
-                .build();
+            let mut btree = btree! {
+                order: 4,
+                internal {
+                    leaf[40] { 10, 20, 30 },
+                    leaf[70] { 40, 50, 60 },
+                    leaf     { 70, 80, 90 },
+                }
+            };
 
             let result = btree.try_insert(Cell::new(55, 110));
 
-            #[rustfmt::skip]
-            let expected = BTreeBuilder::<u32, u32>::default()
-                .with_order(4)
-                .add_internal_node(None).unwrap()
-                    .add_leaf_node(Some(40)).unwrap()
-                        .add_key_value_pair(10, 20).unwrap()
-                        .add_key_value_pair(20, 40).unwrap()
-                        .add_key_value_pair(30, 60).unwrap()
-                    .end_node().unwrap()
-                    .add_leaf_node(Some(60)).unwrap()
-                        .add_key_value_pair(40, 80).unwrap()
-                        .add_key_value_pair(50, 100).unwrap()
-                        .add_key_value_pair(55, 110).unwrap()
-                    .end_node().unwrap()
-                    .add_leaf_node(Some(80)).unwrap()
-                        .add_key_value_pair(60, 120).unwrap()
-                        .add_key_value_pair(70, 140).unwrap()
-                    .end_node().unwrap()
-                    .add_leaf_node(None).unwrap()
-                        .add_key_value_pair(80, 160).unwrap()
-                        .add_key_value_pair(90, 180).unwrap()
-                    .end_node().unwrap()
-                .end_node().unwrap()
-                .build();
+            let expected = btree! {
+                order: 4,
+                internal {
+                    leaf[40] { 10, 20, 30 },
+                    leaf[60] { 40, 50, 55 },
+                    leaf[80] { 60, 70 },
+                    leaf     { 80, 90 },
+                }
+            };
             assert!(result.is_ok());
             assert_eq!(expected, btree);
         }

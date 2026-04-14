@@ -136,10 +136,18 @@ impl<K, V> Default for LeafNode<K, V> {
     }
 }
 
-impl<K: Debug, V> Debug for LeafNode<K, V> {
+impl<K: Ord + Clone + Debug, V: Clone + Debug> Debug for LeafNode<K, V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[LEAF] {:?}", self.slot_directory)?;
-        Ok(())
+        write!(f, "leaf {{")?;
+        for (i, cell) in self.slot_directory.iter().enumerate() {
+            if i == 0 {
+                write!(f, " ")?;
+            } else {
+                write!(f, ", ")?;
+            }
+            write!(f, "{:?} => {:?}", cell.key, cell.value)?;
+        }
+        write!(f, " }}")
     }
 }
 
@@ -338,8 +346,7 @@ impl<K> Default for InternalNode<K> {
 
 impl<K: Debug> Debug for InternalNode<K> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[INTERNAL] {:?}", self.slot_directory)?;
-        Ok(())
+        write!(f, "internal {{ ... }}")
     }
 }
 
@@ -507,7 +514,7 @@ impl<K, V> Node<K, V> {
     }
 }
 
-impl<K: Debug, V> Debug for Node<K, V> {
+impl<K: Ord + Clone + Debug, V: Clone + Debug> Debug for Node<K, V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Node::Leaf(leaf) => write!(f, "{:?}", leaf),
